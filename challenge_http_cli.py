@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-CLI for the candidate API (OpenAPI-aligned paths and POST bodies).
+One-shot **HTTP CLI** for the Nightwatch challenge API: verify, sessions, catalog, incidents, SSE probe, etc.
 
-Loads the secrets env file when present (does not override existing environment variables).
-session-create upserts SESSION_ID into that file on success. Requires API_URL and API_TOKEN.
+This is **not** the long-running incident worker. For that, use ``python -m nightwatch_worker``
+or ``worker.py``.
+
+Loads ``secrets.env`` when present (does not override existing environment variables).
+``session-create`` upserts SESSION_ID into that file on success. Requires API_URL and API_TOKEN.
 """
 
 from __future__ import annotations
@@ -283,7 +286,12 @@ def cmd_stream(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Call the jataware challenge HTTP API.")
+    p = argparse.ArgumentParser(
+        description=(
+            "Ad-hoc HTTP calls to the Nightwatch challenge API (subcommands per endpoint). "
+            "For the long-running worker, use: python -m nightwatch_worker"
+        )
+    )
     p.add_argument(
         "--env-file",
         default="secrets.env",

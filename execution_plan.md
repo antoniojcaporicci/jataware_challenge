@@ -17,7 +17,7 @@ Polling baseline first; SSE as a stretch goal. Check boxes as you complete items
 
 ## 1. Project skeleton
 
-- [ ] Add a small entrypoint (e.g. `python -m nightwatch_worker` or `worker.py`) that loads `API_URL` / `API_TOKEN` / `SESSION_ID` (reuse `secrets.env` pattern from `api_cli.py` if helpful).
+- [ ] Add a small entrypoint (e.g. `python -m nightwatch_worker` or `worker.py`) that loads `API_URL` / `API_TOKEN` / `SESSION_ID` (reuse `secrets.env` pattern from `challenge_http_cli.py` if helpful).
 - [ ] CLI flags: `--session-id`, optional `--env-file`, `--no-env-file`; optional `--poll-interval` capped so you stay compliant with the 5s rule.
 - [ ] Basic structured logging to stdout (session id, incident id, action id, errors).
 
