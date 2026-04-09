@@ -435,7 +435,6 @@ class CatalogCache:
                     "catalog GET failed (%s); using stale cache=%s",
                     msg,
                     self._snapshot is not None,
-                    extra={"incident_id": "-"},
                 )
             return CatalogRefreshResult(
                 success=False,
@@ -475,7 +474,6 @@ class CatalogCache:
                     "catalog refreshed (%d types, %d actions)",
                     len(self._snapshot.playbooks),
                     len(self._snapshot.actions),
-                    extra={"incident_id": "-"},
                 )
             return CatalogRefreshResult(
                 success=True,
@@ -492,7 +490,6 @@ class CatalogCache:
                 "catalog GET failed (%s); using stale cache=%s",
                 msg,
                 self._snapshot is not None,
-                extra={"incident_id": "-"},
             )
         return CatalogRefreshResult(
             success=False,

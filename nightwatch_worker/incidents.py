@@ -659,7 +659,7 @@ def reconcile_tick(
     except urllib.error.URLError as e:
         list_err = str(e)
         if log:
-            log.warning("GET incidents failed: %s", list_err, extra={"incident_id": "-"})
+            log.warning("GET incidents failed: %s", list_err)
         return ReconcileTickResult(
             list_http_status=0,
             list_error=list_err,
@@ -672,7 +672,7 @@ def reconcile_tick(
     if list_status != 200:
         list_err = f"http_status={list_status}"
         if log:
-            log.warning("GET incidents unexpected %s", list_err, extra={"incident_id": "-"})
+            log.warning("GET incidents unexpected %s", list_err)
         return ReconcileTickResult(
             list_http_status=list_status,
             list_error=list_err,
@@ -746,14 +746,22 @@ def reconcile_tick(
             )
 
     if log:
-        tick_iid = targeted or (ordered[0].incident_id if ordered else "-")
-        log.info(
-            "incidents tick: total=%d open=%d detail_target=%s",
-            len(rows),
-            len(ordered),
-            targeted or "-",
-            extra={"incident_id": tick_iid},
-        )
+        tick_iid = targeted or (ordered[0].incident_id if ordered else None)
+        if tick_iid:
+            log.info(
+                "incidents tick: total=%d open=%d detail_target=%s",
+                len(rows),
+                len(ordered),
+                targeted or "-",
+                extra={"incident_id": tick_iid},
+            )
+        else:
+            log.info(
+                "incidents tick: total=%d open=%d detail_target=%s",
+                len(rows),
+                len(ordered),
+                targeted or "-",
+            )
 
     attempts: list[ActionAttempt] = []
     if (
