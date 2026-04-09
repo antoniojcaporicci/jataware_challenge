@@ -329,21 +329,21 @@ class CatalogCache:
 
             # Optional: persist the raw catalog as a markdown file after each successful retrieval
             # (handy for inspecting real API shapes, debugging parsers, or attaching to bug reports).
-            # Leave commented out for normal runs — avoids surprise files in cwd and leaking session
-            # ids into filenames on shared machines.
+            # Uses a single stable filename so session changes or tests do not accumulate catalog-*.md.
+            # Leave commented out for normal runs if you do not want files in cwd.
             #
-            import json
-            from pathlib import Path
-            
-            _path = Path(f"catalog-{session_id}.md")
-            _path.write_text(
-                "# Session catalog\n\n"
-                f"Session id: `{session_id}`\n\n"
-                "## Raw JSON\n\n```json\n"
-                + json.dumps(body, indent=2)
-                + "\n```\n",
-                encoding="utf-8",
-            )
+            # import json
+            # from pathlib import Path
+
+            # _path = Path("catalog.md")
+            # _path.write_text(
+            #     "# Session catalog\n\n"
+            #     f"Session id: `{session_id}`\n\n"
+            #     "## Raw JSON\n\n```json\n"
+            #     + json.dumps(body, indent=2)
+            #     + "\n```\n",
+            #     encoding="utf-8",
+            # )
 
             if log:
                 log.info(

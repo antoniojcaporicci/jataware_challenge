@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from challenge_http_cli import bearer_token, load_env_file, upsert_env_var
 from nightwatch_worker.catalog import CatalogCache
 from nightwatch_worker.http_client import ApiClient
+from nightwatch_worker.incidents import reconcile_tick
 from nightwatch_worker.session_lifecycle import (
     verify_auth_optional,
     wait_until_session_running,
@@ -162,6 +163,13 @@ def build_parser() -> argparse.ArgumentParser:
             "When creating a session after a finished one (default: practice-starter)."
         ),
     )
+    p.add_argument(
+        "--skip-incident-polling",
+        action="store_true",
+        help=(
+            "Do not poll GET /sessions/{id}/incidents each tick (for offline / no-API tests)."
+        ),
+    )
     return p
 
 
@@ -229,16 +237,28 @@ def main() -> None:
         catalog_cache is not None and catalog_cache.snapshot is not None
     )
     log.info(
-        "worker started (poll_interval=%.1fs, catalog_loaded=%s); "
-        "reconcile loop not yet implemented",
+        "worker started (poll_interval=%.1fs, catalog_loaded=%s, incident_polling=%s)",
         poll_interval,
         catalog_loaded,
+        not args.skip_incident_polling,
         extra={"incident_id": "-", "action_id": "-"},
     )
 
     try:
         while True:
-            time.sleep(poll_interval)
-            log.debug("poll tick (placeholder)")
+            if args.skip_incident_polling:
+                time.sleep(poll_interval)
+                log.debug("poll tick (incident polling skipped)")
+                continue
+            t0 = time.monotonic()
+            reconcile_tick(
+                client,
+                sid,
+                log,
+                catalog_cache=catalog_cache,
+                fetch_targeted_detail=True,
+            )
+            sleep_left = max(0.0, poll_interval - (time.monotonic() - t0))
+            time.sleep(sleep_left)
     except KeyboardInterrupt:
         log.info("stopped by user", extra={"incident_id": "-", "action_id": "-"})

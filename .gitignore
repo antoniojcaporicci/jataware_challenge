@@ -13,4 +13,6 @@ build/
 secrets.env
 .secrets
 *.log
+catalog.md
+catalog-*.md
 .DS_Store

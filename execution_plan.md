@@ -6,7 +6,7 @@ Polling baseline first; SSE as a stretch goal. Check boxes as you complete items
 
 - [ ] Treat **HTTP GET responses** as source of truth for catalog, incidents, and incident detail.
 - [ ] Enforce **≥5s between calls** to each rate-limited incident endpoint (per session), and design the loop so you **don’t starve** incidents close to expiry.
-- [ ] One **shared `reconcile()`** (or `tick()`) path that both polling and (later) SSE will call.
+- [x] One **shared `reconcile()`** (or `tick()`) path that both polling and (later) SSE will call.
 
 ### Critical risks (don’t trap the worker)
 
@@ -42,15 +42,15 @@ Polling baseline first; SSE as a stretch goal. Check boxes as you complete items
 
 ## 5. Incidents (discovery)
 
-- [ ] Poll `GET /sessions/{id}/incidents` on the rate-limited schedule.
-- [ ] Maintain a set/list of **open** incidents (skip resolved/expired/finished per API fields).
-- [ ] **TTL-aware ordering:** prioritize incidents with **least time until expiry** for detail refresh and action attempts.
+- [x] Poll `GET /sessions/{id}/incidents` on the rate-limited schedule.
+- [x] Maintain a set/list of **open** incidents (skip resolved/expired/finished per API fields).
+- [x] **TTL-aware ordering:** prioritize incidents with **least time until expiry** for detail refresh and action attempts.
 
 ## 6. Incident detail & state
 
-- [ ] **Primary fleet state:** lean on **`GET …/sessions/{id}/incidents`** (bulk list) and, when enabled, **SSE** for timely updates — **not** per-incident detail for every open row.
-- [ ] **Detail endpoint (targeted):** `GET …/incidents/{incident_id}` only where the list/stream is insufficient — e.g. **stuck**, **transitioning**, or **ambiguous**; stagger when many ids compete for the same endpoint budget.
-- [ ] Derive: **completed / failed actions**, **whether incident accepts actions**, **current in-flight** if exposed in JSON.
+- [x] **Primary fleet state:** lean on **`GET …/sessions/{id}/incidents`** (bulk list) and, when enabled, **SSE** for timely updates — **not** per-incident detail for every open row.
+- [x] **Detail endpoint (targeted):** `GET …/incidents/{incident_id}` only where the list/stream is insufficient — e.g. **stuck**, **transitioning**, or **ambiguous**; stagger when many ids compete for the same endpoint budget.
+- [x] Derive: **completed / failed actions**, **whether incident accepts actions**, **current in-flight** if exposed in JSON.
 - [ ] If detail is ambiguous, optional follow-up: `GET …/incidents/{id}/events` (only if needed — don’t build until detail proves insufficient).
 
 ## 7. Action rules (core correctness)

@@ -44,7 +44,9 @@ python3 -m unittest tests.test_session_lifecycle -v
 
 The worker takes a **session id** (`SESSION_ID` or `--session-id`). On startup it **`POST /sessions/{id}/start`** once (unless `--skip-session-start`), then polls **`GET /sessions/{id}`** until **running**. If that GET shows **finished**, it **`POST /sessions`** to create a **new** session by default (same defaults as `challenge_http_cli session-create`; override with `--session-mode` / `--scenario-type`), updates **`SESSION_ID` in the env file** when one was loaded, **`POST …/start`** on the new id, and polls again. **`--exit-if-session-finished`** exits successfully instead of creating a session. If start returns **403**, start the session elsewhere—the worker keeps polling until GET shows an active state.
 
-After loading `secrets.env` (or exporting `API_URL` / `API_TOKEN` yourself), it runs **`GET /auth/verify`** on startup (skip with `--skip-verify`). Use **`--assume-session-active`** to skip both start and session polling (for example in tests without a reachable API). See `python3 -m nightwatch_worker --help` for all flags.
+After loading `secrets.env` (or exporting `API_URL` / `API_TOKEN` yourself), it runs **`GET /auth/verify`** on startup (skip with `--skip-verify`). Use **`--assume-session-active`** to skip both start and session polling (for example in tests without a reachable API).
+
+In the main loop, **`reconcile_tick`** refreshes the catalog (unless startup skipped it), **`GET`s bulk incidents** on the per-endpoint rate gate, keeps **open** rows sorted by **soonest expiry first**, and issues **at most one** targeted **`GET …/incidents/{id}`** per tick when list fields are insufficient for planning. **`--skip-incident-polling`** disables list/detail polling (e.g. offline tests). See `python3 -m nightwatch_worker --help` for all flags.
 
 ```bash
 set -a && source secrets.env && set +a
