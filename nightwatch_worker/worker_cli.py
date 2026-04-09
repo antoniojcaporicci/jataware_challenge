@@ -15,7 +15,8 @@ import sys
 import time
 from types import SimpleNamespace
 
-from challenge_http_cli import bearer_token, load_env_file
+from challenge_http_cli import bearer_token, load_env_file, upsert_env_var
+from nightwatch_worker.catalog import CatalogCache
 from nightwatch_worker.http_client import ApiClient
 from nightwatch_worker.session_lifecycle import (
     verify_auth_optional,
@@ -131,6 +132,36 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not POST /sessions/{id}/start on startup (poll session state only).",
     )
+    p.add_argument(
+        "--skip-initial-catalog",
+        action="store_true",
+        help=(
+            "Skip GET /sessions/{id}/catalog immediately after the session is active "
+            "(for offline tests or when the API is unreachable)."
+        ),
+    )
+    p.add_argument(
+        "--exit-if-session-finished",
+        action="store_true",
+        help=(
+            "If GET /sessions/{id} is already finished, exit successfully instead of "
+            "POST /sessions to create a new session (default: create a new session)."
+        ),
+    )
+    p.add_argument(
+        "--session-mode",
+        choices=["practice", "challenge"],
+        default="practice",
+        help="When creating a session after a finished one (default: practice).",
+    )
+    p.add_argument(
+        "--scenario-type",
+        default="practice-starter",
+        metavar="TYPE",
+        help=(
+            "When creating a session after a finished one (default: practice-starter)."
+        ),
+    )
     return p
 
 
@@ -145,29 +176,63 @@ def main() -> None:
             f"poll-interval raised to minimum {MIN_POLL_INTERVAL_SEC}s (API rate limits).\n"
         )
 
-    sid = effective_session_id(
+    initial_sid = effective_session_id(
         SimpleNamespace(session_id=args.session_id)
     )
     _require_base_url()
     token = bearer_token()
     api_base = os.environ.get("API_URL", "").strip().rstrip("/")
 
-    log = configure_logging(session_id=sid)
+    log = configure_logging(session_id=initial_sid)
     client = ApiClient(api_base, token)
 
     verify_auth_optional(client, log, skip=args.skip_verify)
-    wait_until_session_running(
+    sid = wait_until_session_running(
         client,
-        sid,
+        initial_sid,
         log,
         poll_interval_sec=poll_interval,
         assume_active=args.assume_session_active,
         skip_session_start=args.skip_session_start,
+        recreate_if_finished=not args.exit_if_session_finished,
+        session_mode=args.session_mode,
+        scenario_type=args.scenario_type,
     )
+    if (
+        sid != initial_sid
+        and not args.no_env_file
+        and args.env_file
+        and os.path.isfile(args.env_file)
+    ):
+        upsert_env_var(args.env_file, "SESSION_ID", sid)
+        os.environ["SESSION_ID"] = sid
 
+    catalog_cache: CatalogCache | None = None
+    if args.skip_initial_catalog:
+        log.info("skipping initial catalog fetch (--skip-initial-catalog)")
+    else:
+        catalog_cache = CatalogCache()
+        cat_result = catalog_cache.maybe_refresh(client, sid, force=True, log=log)
+        if cat_result.success:
+            pass
+        elif cat_result.used_stale and cat_result.snapshot is not None:
+            log.warning(
+                "initial catalog fetch failed; continuing with cached snapshot from earlier in process"
+            )
+        else:
+            log.warning(
+                "initial catalog fetch failed (%s); continuing without catalog until next refresh",
+                cat_result.error_message or f"http_status={cat_result.http_status}",
+            )
+
+    catalog_loaded = bool(
+        catalog_cache is not None and catalog_cache.snapshot is not None
+    )
     log.info(
-        "worker started (poll_interval=%.1fs); reconcile loop not yet implemented",
+        "worker started (poll_interval=%.1fs, catalog_loaded=%s); "
+        "reconcile loop not yet implemented",
         poll_interval,
+        catalog_loaded,
         extra={"incident_id": "-", "action_id": "-"},
     )
 

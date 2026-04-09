@@ -106,6 +106,7 @@ class TestWorkerCli(unittest.TestCase):
                 "--no-env-file",
                 "--skip-verify",
                 "--assume-session-active",
+                "--skip-initial-catalog",
                 "--session-id",
                 "sess-clamp",
                 "--poll-interval",
@@ -143,6 +144,7 @@ class TestWorkerCli(unittest.TestCase):
                 "--no-env-file",
                 "--skip-verify",
                 "--assume-session-active",
+                "--skip-initial-catalog",
                 "--session-id",
                 "sess-run",
                 "--poll-interval",
@@ -168,6 +170,7 @@ class TestWorkerCli(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 0, err + out)
         self.assertIn("worker started", out)
+        self.assertIn("catalog_loaded=False", out)
         self.assertIn("sess-run", out)
         self.assertIn("stopped by user", out)
 

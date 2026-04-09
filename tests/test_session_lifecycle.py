@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import unittest
 import urllib.error
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from nightwatch_worker.session_lifecycle import (
     SessionPhase,
     attempt_session_start,
+    create_session,
     session_status_from_payload,
+    wait_until_session_running,
 )
 
 
@@ -50,6 +52,51 @@ class TestSessionStatusFromPayload(unittest.TestCase):
             session_status_from_payload({"session_id": "x"})[0],
             SessionPhase.UNKNOWN,
         )
+
+
+class TestCreateSession(unittest.TestCase):
+    def test_returns_session_id(self) -> None:
+        client = MagicMock()
+        client.post_json.return_value = (
+            200,
+            {"api_version": "v2", "session_id": "sess_new"},
+        )
+        log = MagicMock()
+        sid = create_session(client, log, session_mode="practice", scenario_type="x")
+        self.assertEqual(sid, "sess_new")
+        client.post_json.assert_called_once_with(
+            "/sessions",
+            {"session_mode": "practice", "scenario_type": "x"},
+            rate_limited=False,
+        )
+
+
+class TestWaitUntilSessionRunningRecreate(unittest.TestCase):
+    @patch("nightwatch_worker.session_lifecycle.time.sleep")
+    def test_finished_recreates_then_running(self, _sleep: MagicMock) -> None:
+        client = MagicMock()
+        client.post_json.side_effect = [
+            (200, {}),
+            (200, {"session_id": "s2", "api_version": "v2"}),
+            (200, {}),
+        ]
+        client.get_json.side_effect = [
+            (200, {"status": "finished"}),
+            (200, {"status": "running"}),
+        ]
+        log = MagicMock()
+        log.extra = {"session_id": "s1"}
+        sid = wait_until_session_running(
+            client,
+            "s1",
+            log,
+            poll_interval_sec=0.01,
+            assume_active=False,
+            skip_session_start=False,
+            recreate_if_finished=True,
+        )
+        self.assertEqual(sid, "s2")
+        self.assertEqual(log.extra["session_id"], "s2")
 
 
 class TestAttemptSessionStart(unittest.TestCase):

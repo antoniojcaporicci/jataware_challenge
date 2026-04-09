@@ -35,10 +35,10 @@ Polling baseline first; SSE as a stretch goal. Check boxes as you complete items
 
 ## 4. Catalog
 
-- [ ] `GET /sessions/{id}/catalog`; cache in memory with “last fetched at.”
-- [ ] On fetch failure: **back off** and retry **without blocking reconciliation** for incidents already mappable from cache; **continue using stale cache** for those. Only **delay or skip** planning for incident types that need a fresh catalog to map safely.
-- [ ] Parse enough structure to map: **playbook steps**, **action metadata** (at least: `action_id`, **dependencies**, **serial vs parallel** per API shape — adjust after first real response).
-- [ ] **Planner hook:** given catalog + incident state, compute **eligible next actions**.
+- [x] `GET /sessions/{id}/catalog`; cache in memory with “last fetched at.”
+- [x] On fetch failure: **back off** and retry **without blocking reconciliation** for incidents already mappable from cache; **continue using stale cache** for those. Only **delay or skip** planning for incident types that need a fresh catalog to map safely.
+- [x] Parse enough structure to map: **playbook steps**, **action metadata** (at least: `action_id`, **dependencies**, **serial vs parallel** per API shape — adjust after first real response).
+- [x] **Planner hook:** given catalog + incident state, compute **eligible next actions**.
 
 ## 5. Incidents (discovery)
 

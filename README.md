@@ -42,7 +42,7 @@ python3 -m unittest tests.test_session_lifecycle -v
 
 ## Running the worker (MVP)
 
-The worker expects an **existing** session id (`SESSION_ID` in the environment or `--session-id`). **Creating** a session is still done with `challenge_http_cli.py` (`session-create`, …); on startup the worker calls **`POST /sessions/{session_id}/start`** once (skip with `--skip-session-start`), then polls **`GET /sessions/{session_id}`** until the session looks **running** (or exits cleanly if it is already **finished**). If start returns **403**, the token may not be allowed to start the session—start it another way and the worker will keep polling until GET shows an active state.
+The worker takes a **session id** (`SESSION_ID` or `--session-id`). On startup it **`POST /sessions/{id}/start`** once (unless `--skip-session-start`), then polls **`GET /sessions/{id}`** until **running**. If that GET shows **finished**, it **`POST /sessions`** to create a **new** session by default (same defaults as `challenge_http_cli session-create`; override with `--session-mode` / `--scenario-type`), updates **`SESSION_ID` in the env file** when one was loaded, **`POST …/start`** on the new id, and polls again. **`--exit-if-session-finished`** exits successfully instead of creating a session. If start returns **403**, start the session elsewhere—the worker keeps polling until GET shows an active state.
 
 After loading `secrets.env` (or exporting `API_URL` / `API_TOKEN` yourself), it runs **`GET /auth/verify`** on startup (skip with `--skip-verify`). Use **`--assume-session-active`** to skip both start and session polling (for example in tests without a reachable API). See `python3 -m nightwatch_worker --help` for all flags.
 

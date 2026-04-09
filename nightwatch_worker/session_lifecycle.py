@@ -128,6 +128,35 @@ def verify_auth_optional(
     log.info("auth verify ok")
 
 
+def create_session(
+    client: ApiClient,
+    log: logging.LoggerAdapter,
+    *,
+    session_mode: str = "practice",
+    scenario_type: str = "practice-starter",
+) -> str:
+    """POST /sessions; return new ``session_id`` (exits process on hard failure)."""
+    payload = {"session_mode": session_mode, "scenario_type": scenario_type}
+    try:
+        st, body = client.post_json("/sessions", payload, rate_limited=False)
+    except urllib.error.URLError as e:
+        log.error("POST /sessions network error: %s", e)
+        sys.exit(1)
+    if st not in (200, 201):
+        log.error("POST /sessions failed: http_status=%s body=%s", st, body)
+        sys.exit(1)
+    if not isinstance(body, dict):
+        log.error("POST /sessions unexpected response body: %s", body)
+        sys.exit(1)
+    sid = body.get("session_id") or body.get("id")
+    if not sid:
+        log.error("POST /sessions response missing session_id: %s", body)
+        sys.exit(1)
+    new_id = str(sid).strip()
+    log.info("created new session (session_id=%s)", new_id)
+    return new_id
+
+
 def attempt_session_start(
     client: ApiClient,
     session_id: str,
@@ -178,19 +207,24 @@ def wait_until_session_running(
     poll_interval_sec: float,
     assume_active: bool,
     skip_session_start: bool,
-) -> None:
+    recreate_if_finished: bool = False,
+    session_mode: str = "practice",
+    scenario_type: str = "practice-starter",
+) -> str:
     if assume_active:
         log.info(
             "assuming session already active (--assume-session-active); skipping session poll"
         )
-        return
+        return session_id
+
+    current_id = session_id
 
     if skip_session_start:
         log.info("skipping POST /sessions/{id}/start (--skip-session-start)")
     else:
-        attempt_session_start(client, session_id, log)
+        attempt_session_start(client, current_id, log)
 
-    path = f"/sessions/{session_id}"
+    path = f"/sessions/{current_id}"
     while True:
         try:
             st, body = client.get_json(
@@ -223,10 +257,31 @@ def wait_until_session_running(
         phase, raw = session_status_from_payload(body)
         if phase == SessionPhase.RUNNING:
             log.info("session is active (status=%r); entering main loop", raw)
-            return
+            return current_id
         if phase == SessionPhase.TERMINAL_OK:
-            log.info("session already finished (status=%r); exiting", raw)
-            sys.exit(0)
+            if not recreate_if_finished:
+                log.info("session already finished (status=%r); exiting", raw)
+                sys.exit(0)
+            log.info(
+                "session already finished (status=%r); creating a new session",
+                raw,
+            )
+            current_id = create_session(
+                client,
+                log,
+                session_mode=session_mode,
+                scenario_type=scenario_type,
+            )
+            if hasattr(log, "extra") and isinstance(log.extra, dict):
+                log.extra["session_id"] = current_id
+            path = f"/sessions/{current_id}"
+            if skip_session_start:
+                log.info(
+                    "skipping POST /sessions/{id}/start for new session (--skip-session-start)"
+                )
+            else:
+                attempt_session_start(client, current_id, log)
+            continue
         if phase == SessionPhase.TERMINAL_BAD:
             log.error("session in terminal failure state (status=%r); exiting", raw)
             sys.exit(1)
