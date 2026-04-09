@@ -1,8 +1,8 @@
 # jataware_challenge
 
-## What this repo does
+## Prod Alerts Detection
 
-This repo holds a **long-running worker** that talks to the simulation backend over HTTP and keeps a session healthy until it finishes:
+This repo holds a **long-running worker** that detects incidents as they appear in the nightwatch.jata.lol service. It uses the catalog to decide what to do next, and resolves those incidents before they expire.
 
 - **Lifecycle** — creates or reuses a session, starts it when permitted, and runs until the session completes or is stopped.
 - **Incident detection** — keeps an **SSE** connection to the session stream for low-latency notifications, while using **HTTP as the source of truth** for incident and catalog state (including after SSE wake-ups).
