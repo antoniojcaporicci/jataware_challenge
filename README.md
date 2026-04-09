@@ -37,6 +37,18 @@ To run a single module, for example:
 ```bash
 python3 -m unittest tests.test_http_client -v
 python3 -m unittest tests.test_worker_cli -v
+python3 -m unittest tests.test_session_lifecycle -v
+```
+
+## Running the worker (MVP)
+
+The worker expects an **existing** session id (`SESSION_ID` in the environment or `--session-id`). **Creating** a session is still done with `challenge_http_cli.py` (`session-create`, …); on startup the worker calls **`POST /sessions/{session_id}/start`** once (skip with `--skip-session-start`), then polls **`GET /sessions/{session_id}`** until the session looks **running** (or exits cleanly if it is already **finished**). If start returns **403**, the token may not be allowed to start the session—start it another way and the worker will keep polling until GET shows an active state.
+
+After loading `secrets.env` (or exporting `API_URL` / `API_TOKEN` yourself), it runs **`GET /auth/verify`** on startup (skip with `--skip-verify`). Use **`--assume-session-active`** to skip both start and session polling (for example in tests without a reachable API). See `python3 -m nightwatch_worker --help` for all flags.
+
+```bash
+set -a && source secrets.env && set +a
+python3 -m nightwatch_worker
 ```
 
 ## Connecting to the API (secrets, not in git)

@@ -16,6 +16,11 @@ import time
 from types import SimpleNamespace
 
 from challenge_http_cli import bearer_token, load_env_file
+from nightwatch_worker.http_client import ApiClient
+from nightwatch_worker.session_lifecycle import (
+    verify_auth_optional,
+    wait_until_session_running,
+)
 
 
 MIN_POLL_INTERVAL_SEC = 5.0
@@ -109,6 +114,23 @@ def build_parser() -> argparse.ArgumentParser:
             f"minimum {MIN_POLL_INTERVAL_SEC} to stay within per-endpoint limits."
         ),
     )
+    p.add_argument(
+        "--skip-verify",
+        action="store_true",
+        help="Skip GET /auth/verify on startup.",
+    )
+    p.add_argument(
+        "--assume-session-active",
+        action="store_true",
+        help=(
+            "Skip polling GET /sessions/{id} until running (use when API unreachable, e.g. tests)."
+        ),
+    )
+    p.add_argument(
+        "--skip-session-start",
+        action="store_true",
+        help="Do not POST /sessions/{id}/start on startup (poll session state only).",
+    )
     return p
 
 
@@ -127,11 +149,24 @@ def main() -> None:
         SimpleNamespace(session_id=args.session_id)
     )
     _require_base_url()
-    _ = bearer_token()
+    token = bearer_token()
+    api_base = os.environ.get("API_URL", "").strip().rstrip("/")
 
     log = configure_logging(session_id=sid)
+    client = ApiClient(api_base, token)
+
+    verify_auth_optional(client, log, skip=args.skip_verify)
+    wait_until_session_running(
+        client,
+        sid,
+        log,
+        poll_interval_sec=poll_interval,
+        assume_active=args.assume_session_active,
+        skip_session_start=args.skip_session_start,
+    )
+
     log.info(
-        "worker skeleton started (poll_interval=%.1fs); main reconcile loop not yet implemented",
+        "worker started (poll_interval=%.1fs); reconcile loop not yet implemented",
         poll_interval,
         extra={"incident_id": "-", "action_id": "-"},
     )

@@ -29,9 +29,9 @@ Polling baseline first; SSE as a stretch goal. Check boxes as you complete items
 
 ## 3. Session lifecycle
 
-- [ ] Optional: `GET /auth/verify` on startup.
-- [ ] **Assume existing session** for MVP path: read `SESSION_ID` from env; document optional future: create/start via API.
-- [ ] Poll `GET /sessions/{id}` until session is **running** (or defined “active”) or terminal; handle `session_finished` / failure states cleanly.
+- [x] Optional: `GET /auth/verify` on startup.
+- [x] **Assume existing session** for MVP path: read `SESSION_ID` from env; worker calls `POST …/start` on launch; **create** session remains optional/future (`challenge_http_cli` or API).
+- [x] Poll `GET /sessions/{id}` until session is **running** (or defined “active”) or terminal; handle `session_finished` / failure states cleanly.
 
 ## 4. Catalog
 

@@ -104,6 +104,8 @@ class TestWorkerCli(unittest.TestCase):
                 "-m",
                 "nightwatch_worker",
                 "--no-env-file",
+                "--skip-verify",
+                "--assume-session-active",
                 "--session-id",
                 "sess-clamp",
                 "--poll-interval",
@@ -139,6 +141,8 @@ class TestWorkerCli(unittest.TestCase):
                 "-m",
                 "nightwatch_worker",
                 "--no-env-file",
+                "--skip-verify",
+                "--assume-session-active",
                 "--session-id",
                 "sess-run",
                 "--poll-interval",
@@ -163,7 +167,7 @@ class TestWorkerCli(unittest.TestCase):
                 proc.communicate(timeout=2)
 
         self.assertEqual(proc.returncode, 0, err + out)
-        self.assertIn("worker skeleton started", out)
+        self.assertIn("worker started", out)
         self.assertIn("sess-run", out)
         self.assertIn("stopped by user", out)
 
