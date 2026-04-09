@@ -9,23 +9,54 @@ For **one-off HTTP calls** to the API (verify, session-create, catalog, incident
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
+import threading
 import time
 from types import SimpleNamespace
 
 from challenge_http_cli import bearer_token, load_env_file, upsert_env_var
 from nightwatch_worker.catalog import CatalogCache
 from nightwatch_worker.http_client import ApiClient
-from nightwatch_worker.incidents import reconcile_tick
+from nightwatch_worker.incidents import (
+    open_incidents_fingerprint,
+    reconcile_tick,
+)
 from nightwatch_worker.session_lifecycle import (
+    SessionPhase,
+    fetch_session_summary,
+    main_loop_session_phase,
     verify_auth_optional,
     wait_until_session_running,
 )
 
 
 MIN_POLL_INTERVAL_SEC = 5.0
+
+
+class _WakeCoordinator:
+    """Thread-safe wait that can be signaled from another thread (e.g. future SSE wakeup)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._cv = threading.Condition(self._lock)
+        self._signaled = False
+
+    def notify_check(self) -> None:
+        with self._cv:
+            self._signaled = True
+            self._cv.notify_all()
+
+    def wait_until(self, deadline_monotonic: float) -> None:
+        with self._cv:
+            while not self._signaled:
+                remaining = deadline_monotonic - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._cv.wait(timeout=remaining)
+            self._signaled = False
 
 
 class _StructuredFormatter(logging.Formatter):
@@ -170,6 +201,31 @@ def build_parser() -> argparse.ArgumentParser:
             "Do not poll GET /sessions/{id}/incidents each tick (for offline / no-API tests)."
         ),
     )
+    p.add_argument(
+        "--max-action-posts-per-tick",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "Cap POST …/action calls per reconcile tick (default: 1). "
+            "Raise only if the API tolerates higher throughput; each POST honors the 5s gate."
+        ),
+    )
+    p.add_argument(
+        "--dead-man-minutes",
+        type=float,
+        default=25.0,
+        metavar="MIN",
+        help=(
+            "If there are open incidents and their HTTP-derived fingerprint does not change "
+            "for this long, log and exit (0 disables)."
+        ),
+    )
+    p.add_argument(
+        "--summary-json",
+        action="store_true",
+        help="Fetch GET …/summary as JSON instead of markdown.",
+    )
     return p
 
 
@@ -244,21 +300,83 @@ def main() -> None:
         extra={"incident_id": "-", "action_id": "-"},
     )
 
+    poll_session_in_loop = not args.assume_session_active
+    wake = _WakeCoordinator()
+    local_pending: dict[str, set[str]] = {}
+    reject_backoff: dict[str, float] = {}
+    last_open_fp: str | None = None
+    last_progress_mono = time.monotonic()
+    dead_man_sec = float(args.dead_man_minutes) * 60.0 if args.dead_man_minutes > 0 else 0.0
+
     try:
         while True:
+            tick_start = time.monotonic()
+
+            if poll_session_in_loop:
+                phase, raw_status = main_loop_session_phase(client, sid, log=log)
+                if phase == SessionPhase.TERMINAL_BAD:
+                    log.error(
+                        "session reached terminal failure during run (status=%r)",
+                        raw_status,
+                        extra={"incident_id": "-", "action_id": "-"},
+                    )
+                    sys.exit(1)
+                if phase == SessionPhase.TERMINAL_OK:
+                    st_sum, body_sum = fetch_session_summary(
+                        client,
+                        sid,
+                        log=log,
+                        prefer_markdown=not args.summary_json,
+                    )
+                    log.info(
+                        "session finished (status=%r); summary http_status=%s",
+                        raw_status,
+                        st_sum,
+                        extra={"incident_id": "-", "action_id": "-"},
+                    )
+                    if isinstance(body_sum, str) and body_sum.strip():
+                        print(body_sum.rstrip())
+                    elif isinstance(body_sum, (dict, list)):
+                        print(json.dumps(body_sum, indent=2))
+                    return
+
             if args.skip_incident_polling:
-                time.sleep(poll_interval)
-                log.debug("poll tick (incident polling skipped)")
+                wake.wait_until(tick_start + poll_interval)
                 continue
-            t0 = time.monotonic()
-            reconcile_tick(
+
+            tick_result = reconcile_tick(
                 client,
                 sid,
                 log,
                 catalog_cache=catalog_cache,
                 fetch_targeted_detail=True,
+                execute_actions=True,
+                local_pending=local_pending,
+                reject_backoff_until=reject_backoff,
+                max_action_posts_per_tick=max(1, int(args.max_action_posts_per_tick)),
             )
-            sleep_left = max(0.0, poll_interval - (time.monotonic() - t0))
-            time.sleep(sleep_left)
+
+            fp = open_incidents_fingerprint(tick_result.open_incidents)
+            if tick_result.open_incidents:
+                if fp != last_open_fp:
+                    last_progress_mono = time.monotonic()
+                    last_open_fp = fp
+                for att in tick_result.action_attempts:
+                    if att.ok:
+                        last_progress_mono = time.monotonic()
+                if dead_man_sec > 0:
+                    stall = time.monotonic() - last_progress_mono
+                    if stall > dead_man_sec:
+                        log.error(
+                            "dead man: no progress on open incidents for %.0fs — exiting",
+                            stall,
+                            extra={"incident_id": "-", "action_id": "-"},
+                        )
+                        sys.exit(1)
+            else:
+                last_open_fp = None
+                last_progress_mono = time.monotonic()
+
+            wake.wait_until(tick_start + poll_interval)
     except KeyboardInterrupt:
         log.info("stopped by user", extra={"incident_id": "-", "action_id": "-"})

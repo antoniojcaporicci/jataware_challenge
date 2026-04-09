@@ -4,8 +4,8 @@ Polling baseline first; SSE as a stretch goal. Check boxes as you complete items
 
 ## Ground rules
 
-- [ ] Treat **HTTP GET responses** as source of truth for catalog, incidents, and incident detail.
-- [ ] Enforce **≥5s between calls** to each rate-limited incident endpoint (per session), and design the loop so you **don’t starve** incidents close to expiry.
+- [x] Treat **HTTP GET responses** as source of truth for catalog, incidents, and incident detail.
+- [x] Enforce **≥5s between calls** to each rate-limited incident endpoint (per session), and design the loop so you **don’t starve** incidents close to expiry.
 - [x] One **shared `reconcile()`** (or `tick()`) path that both polling and (later) SSE will call.
 
 ### Critical risks (don’t trap the worker)
@@ -55,27 +55,27 @@ Polling baseline first; SSE as a stretch goal. Check boxes as you complete items
 
 ## 7. Action rules (core correctness)
 
-- [ ] **Dependencies:** never submit an action until prerequisites are satisfied (playbook order / deps).
-- [ ] **Serial:** at most one serial action “in flight” per incident; no overlap violating API rules.
-- [ ] **Parallel / throughput:** cap concurrent actions per **API-documented or observed** limits (e.g. **two parallel per incident** if that’s the rule). If the API is **low-throughput**, add a **global** `max concurrent POST …/action` (semaphore) so many incidents don’t trip **429/503** — tune from real behavior, not only a per-incident count.
-- [ ] **Finished incidents:** no further `POST …/action`.
-- [ ] Track **local in-flight** submissions if the API doesn’t immediately show them on GET (optimistic pending until detail confirms).
+- [x] **Dependencies:** never submit an action until prerequisites are satisfied (playbook order / deps).
+- [x] **Serial:** at most one serial action “in flight” per incident; no overlap violating API rules.
+- [x] **Parallel / throughput:** cap concurrent actions per **API-documented or observed** limits (e.g. **two parallel per incident** if that’s the rule). If the API is **low-throughput**, add a **global** `max concurrent POST …/action` (semaphore) so many incidents don’t trip **429/503** — tune from real behavior, not only a per-incident count.
+- [x] **Finished incidents:** no further `POST …/action`.
+- [x] Track **local in-flight** submissions if the API doesn’t immediately show them on GET (optimistic pending until detail confirms).
 
 ## 8. Executor
 
-- [ ] `POST …/incidents/{id}/action` with `{ "action_id": "…" }` (and optional `notes` only if required).
-- [ ] On **rejection** (4xx): refresh detail, **back off**, **don’t** spam; adjust plan (e.g. dependency race, capacity, finished).
-- [ ] On success: refresh detail on next cycle (or immediately if rate gate allows and TTL is tight).
+- [x] `POST …/incidents/{id}/action` with `{ "action_id": "…" }` (and optional `notes` only if required).
+- [x] On **rejection** (4xx): refresh detail, **back off**, **don’t** spam; adjust plan (e.g. dependency race, capacity, finished).
+- [x] On success: refresh detail on next cycle (or immediately if rate gate allows and TTL is tight).
 
 ## 9. Main polling loop
 
-- [ ] **Wake coordination:** use a **thread-safe queue** and/or **condition variable** so **one** path computes sleep until `min(next_scheduled_poll, …)` and **both** the timer and SSE can signal “run a check.” Avoid ad-hoc sleeps that race with stream wakeups.
-- [ ] **Polling MVP:** roughly every **5s** (or your compliant interval), enqueue a **`Check`** (or wake the waiter) so **reconcile** runs on a steady baseline even without SSE.
-- [ ] Single logical loop: compute **next wake time** = min(poll incidents, poll session, per-incident **targeted** detail slots, catalog refresh if any); wait until that time **or** an external wake.
-- [ ] Each iteration: refresh session state → refresh catalog if stale or needed → list incidents → **reconcile** open incidents (bulk/list (+ SSE) first; **targeted** detail → plan → execute).
-- [ ] **Dead man’s switch:** if session remains **running** but there are **no** relevant SSE events **and** **no** incident activity for **N** minutes (tunable), **log/alert and exit** — don’t idle forever.
-- [ ] Exit when session is **complete** / `GET …/summary` succeeds (or documented terminal condition).
-- [ ] Print or save **summary** once at the end.
+- [x] **Wake coordination:** use a **thread-safe queue** and/or **condition variable** so **one** path computes sleep until `min(next_scheduled_poll, …)` and **both** the timer and SSE can signal “run a check.” Avoid ad-hoc sleeps that race with stream wakeups.
+- [x] **Polling MVP:** roughly every **5s** (or your compliant interval), enqueue a **`Check`** (or wake the waiter) so **reconcile** runs on a steady baseline even without SSE.
+- [x] Single logical loop: compute **next wake time** = min(poll incidents, poll session, per-incident **targeted** detail slots, catalog refresh if any); wait until that time **or** an external wake.
+- [x] Each iteration: refresh session state → refresh catalog if stale or needed → list incidents → **reconcile** open incidents (bulk/list (+ SSE) first; **targeted** detail → plan → execute).
+- [x] **Dead man’s switch:** if session remains **running** but there are **no** relevant SSE events **and** **no** incident activity for **N** minutes (tunable), **log/alert and exit** — don’t idle forever.
+- [x] Exit when session is **complete** / `GET …/summary` succeeds (or documented terminal condition).
+- [x] Print or save **summary** once at the end.
 
 ## 10. Docs & handoff (short README)
 
@@ -99,5 +99,5 @@ Polling baseline first; SSE as a stretch goal. Check boxes as you complete items
 ## Definition of done (MVP)
 
 - [ ] Process runs **unattended** from start through **successful summary** on at least the **practice** scenario.
-- [ ] No systematic violations of **serial/parallel** rules; stable under **5s** REST limits.
+- [x] No systematic violations of **serial/parallel** rules; stable under **5s** REST limits.
 - [ ] Incidents are **resolved before expiry** on the scenarios you tested, or failures are clearly logged with cause.

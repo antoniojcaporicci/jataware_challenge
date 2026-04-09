@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import unittest
 import urllib.error
@@ -42,7 +43,55 @@ def _sample_catalog() -> dict:
     }
 
 
+def _nightwatch_style_catalog() -> dict:
+    """Shape from real API (session catalog): actions dict + catalog.type.resolution_actions."""
+    return {
+        "api_version": "v2",
+        "catalog_revision": 1,
+        "actions": {
+            "compare_cache_snapshot": {
+                "execution": "parallel",
+                "duration_sec": 5,
+            },
+            "info": {
+                "execution": "serial",
+                "duration_sec": 1,
+            },
+        },
+        "catalog": {
+            "cache_drift": {
+                "incident_type": "cache_drift",
+                "resolution_actions": [
+                    {"action_id": "info"},
+                    {
+                        "action_id": "compare_cache_snapshot",
+                        "depends_on": ["info"],
+                    },
+                ],
+            }
+        },
+    }
+
+
 class TestParseCatalog(unittest.TestCase):
+    def test_parses_nightwatch_catalog_dict_actions_and_resolution_playbook(self) -> None:
+        snap = parse_catalog_body(_nightwatch_style_catalog())
+        self.assertIn("info", snap.actions)
+        self.assertTrue(snap.actions["compare_cache_snapshot"].parallel)
+        self.assertFalse(snap.actions["info"].parallel)
+        self.assertEqual(
+            frozenset(["info"]),
+            snap.actions["compare_cache_snapshot"].dependencies,
+        )
+        book = snap.playbook("cache_drift")
+        assert book is not None
+        self.assertEqual(book, ("info", "compare_cache_snapshot"))
+        self.assertEqual(
+            snap.playbook("cache_drift_2"),
+            ("info", "compare_cache_snapshot"),
+        )
+        self.assertTrue(incident_type_mappable(snap, "cache_drift_2"))
+
     def test_parses_actions_and_playbooks(self) -> None:
         snap = parse_catalog_body(_sample_catalog())
         self.assertIn("sync", snap.actions)
@@ -67,6 +116,11 @@ class TestParseCatalog(unittest.TestCase):
 class TestEligibleNextActions(unittest.TestCase):
     def setUp(self) -> None:
         self.snap = parse_catalog_body(_sample_catalog())
+
+    def test_nightwatch_catalog_cache_drift_2_eligible_info(self) -> None:
+        snap = parse_catalog_body(_nightwatch_style_catalog())
+        st = IncidentPlanningState(incident_type="cache_drift_2")
+        self.assertEqual(eligible_next_actions(snap, st), ["info"])
 
     def test_first_parallel_when_no_deps_done(self) -> None:
         st = IncidentPlanningState(incident_type="disk_full")
@@ -143,6 +197,7 @@ class TestCatalogCache(unittest.TestCase):
         opener = MagicMock()
         cm = _CM()
         setattr(cm, "status", status)
+        setattr(cm, "headers", http.client.HTTPMessage())
         opener.open.return_value = cm
         return opener
 
@@ -168,6 +223,7 @@ class TestCatalogCache(unittest.TestCase):
             def __init__(self, status: int, body: bytes) -> None:
                 self.status = status
                 self._b = body
+                self.headers = http.client.HTTPMessage()
 
             def __enter__(self) -> _CM:
                 return self

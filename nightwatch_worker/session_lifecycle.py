@@ -199,6 +199,66 @@ def attempt_session_start(
     )
 
 
+def poll_session_get(
+    client: ApiClient,
+    session_id: str,
+    log: logging.LoggerAdapter | None = None,
+) -> tuple[int, Any]:
+    """GET /sessions/{id} for main-loop checks. Returns (http_status, body)."""
+    path = f"/sessions/{session_id}"
+    try:
+        st, body = client.get_json(
+            path,
+            rate_limited=False,
+            retry_network_attempts=2,
+            retry_5xx_attempts=2,
+        )
+        return st, body
+    except urllib.error.URLError as e:
+        if log:
+            log.warning("GET session (main loop): network error: %s", e)
+        return 0, {"error": str(e)}
+
+
+def main_loop_session_phase(
+    client: ApiClient,
+    session_id: str,
+    log: logging.LoggerAdapter | None = None,
+) -> tuple[SessionPhase, str]:
+    """Classify current session state for the worker main loop."""
+    st, body = poll_session_get(client, session_id, log=log)
+    if st == 404:
+        return SessionPhase.TERMINAL_BAD, "not_found"
+    if st != 200 or not isinstance(body, dict):
+        return SessionPhase.UNKNOWN, ""
+    phase, raw = session_status_from_payload(body)
+    return phase, raw
+
+
+def fetch_session_summary(
+    client: ApiClient,
+    session_id: str,
+    log: logging.LoggerAdapter | None = None,
+    *,
+    prefer_markdown: bool = True,
+) -> tuple[int, Any]:
+    """GET /sessions/{id}/summary (markdown or JSON)."""
+    path = f"/sessions/{session_id}/summary"
+    accept = "text/markdown" if prefer_markdown else "application/json"
+    try:
+        st, body = client.request_json(
+            "GET",
+            path,
+            rate_limited=False,
+            accept=accept,
+        )
+        return st, body
+    except urllib.error.URLError as e:
+        if log:
+            log.warning("GET summary: network error: %s", e)
+        return 0, str(e)
+
+
 def wait_until_session_running(
     client: ApiClient,
     session_id: str,

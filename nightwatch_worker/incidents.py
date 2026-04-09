@@ -9,7 +9,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from nightwatch_worker.catalog import CatalogCache, IncidentPlanningState
+from nightwatch_worker.catalog import (
+    CatalogCache,
+    IncidentPlanningState,
+    eligible_next_actions,
+    incident_type_mappable,
+)
 from nightwatch_worker.http_client import ApiClient
 
 
@@ -138,12 +143,21 @@ class IncidentState:
 
 
 @dataclass
+class ActionAttempt:
+    incident_id: str
+    action_id: str
+    http_status: int
+    ok: bool
+
+
+@dataclass
 class ReconcileTickResult:
     list_http_status: int
     list_error: str | None
     open_incidents: list[IncidentState]  # TTL order (soonest expiry first; unknown expiry last)
     targeted_detail_id: str | None
     detail_http_status: int | None
+    action_attempts: list[ActionAttempt] = field(default_factory=list)
 
 
 def _parse_list_item(obj: Any) -> IncidentListRow | None:
@@ -367,6 +381,158 @@ def to_planning_state(state: IncidentState) -> IncidentPlanningState | None:
     )
 
 
+def to_planning_state_with_pending(
+    state: IncidentState,
+    pending: frozenset[str],
+) -> IncidentPlanningState | None:
+    """Like :func:`to_planning_state` but treat locally submitted actions as in-flight."""
+    base = to_planning_state(state)
+    if base is None:
+        return None
+    return IncidentPlanningState(
+        incident_type=base.incident_type,
+        completed_action_ids=base.completed_action_ids,
+        failed_action_ids=base.failed_action_ids,
+        in_flight_action_ids=base.in_flight_action_ids | pending,
+        accepts_actions=base.accepts_actions,
+        finished=base.finished,
+    )
+
+
+def prune_local_pending(
+    states: Iterable[IncidentState],
+    local_pending: dict[str, set[str]],
+) -> None:
+    """Drop pending entries once the API reflects an action as in-flight, done, or failed."""
+    for s in states:
+        iid = s.incident_id
+        if iid not in local_pending:
+            continue
+        reflected = (
+            s.in_flight_action_ids | s.completed_action_ids | s.failed_action_ids
+        )
+        still = {a for a in local_pending[iid] if a not in reflected}
+        if still:
+            local_pending[iid] = still
+        else:
+            del local_pending[iid]
+
+
+def open_incidents_fingerprint(states: Iterable[IncidentState]) -> str:
+    """Stable fingerprint for dead-man / stall detection (open incidents only)."""
+    parts: list[str] = []
+    for s in states:
+        parts.append(
+            ":".join(
+                (
+                    s.incident_id,
+                    _norm_status(s.status_token),
+                    str(int(s.accepts_actions)),
+                    str(len(s.completed_action_ids)),
+                    str(len(s.in_flight_action_ids)),
+                    str(len(s.failed_action_ids)),
+                )
+            )
+        )
+    parts.sort()
+    return "|".join(parts)
+
+
+def _execute_planned_actions(
+    *,
+    client: ApiClient,
+    session_id: str,
+    log: logging.LoggerAdapter | None,
+    states: list[IncidentState],
+    catalog_cache: CatalogCache,
+    local_pending: dict[str, set[str]],
+    reject_backoff_until: dict[str, float],
+    max_action_posts_per_tick: int,
+) -> list[ActionAttempt]:
+    snap = catalog_cache.snapshot
+    if snap is None:
+        return []
+    prune_local_pending(states, local_pending)
+    attempts: list[ActionAttempt] = []
+    posts = 0
+    now_b = time.monotonic()
+    for state in states:
+        if posts >= max_action_posts_per_tick:
+            break
+        if state.finished or not state.accepts_actions:
+            continue
+        iid = state.incident_id
+        if iid in reject_backoff_until and now_b < reject_backoff_until[iid]:
+            continue
+        if not incident_type_mappable(snap, state.incident_type):
+            continue
+        pend = frozenset(local_pending.get(iid, ()))
+        ps = to_planning_state_with_pending(state, pend)
+        if ps is None:
+            continue
+        eligible = eligible_next_actions(snap, ps)
+        for action_id in eligible:
+            if posts >= max_action_posts_per_tick:
+                break
+            path = f"/sessions/{session_id}/incidents/{iid}/action"
+            try:
+                st_post, body = client.post_json(
+                    path,
+                    {"action_id": action_id},
+                    rate_limited=True,
+                )
+            except urllib.error.URLError as e:
+                if log:
+                    log.warning(
+                        "POST action network error incident_id=%s action_id=%s: %s",
+                        iid,
+                        action_id,
+                        e,
+                        extra={"incident_id": iid, "action_id": action_id},
+                    )
+                attempts.append(ActionAttempt(iid, action_id, 0, False))
+                reject_backoff_until[iid] = time.monotonic() + 6.0
+                posts += 1
+                continue
+
+            ok = 200 <= st_post < 300
+            attempts.append(ActionAttempt(iid, action_id, st_post, ok))
+            extra = {"incident_id": iid, "action_id": action_id}
+            if ok:
+                local_pending.setdefault(iid, set()).add(action_id)
+                if log:
+                    log.info(
+                        "submitted action incident_id=%s action_id=%s http_status=%s",
+                        iid,
+                        action_id,
+                        st_post,
+                        extra=extra,
+                    )
+            elif 400 <= st_post < 500:
+                reject_backoff_until[iid] = time.monotonic() + 8.0
+                if log:
+                    log.warning(
+                        "action rejected incident_id=%s action_id=%s http_status=%s body=%s",
+                        iid,
+                        action_id,
+                        st_post,
+                        body,
+                        extra=extra,
+                    )
+            else:
+                reject_backoff_until[iid] = time.monotonic() + 5.0
+                if log:
+                    log.warning(
+                        "action POST unexpected status incident_id=%s action_id=%s http_status=%s",
+                        iid,
+                        action_id,
+                        st_post,
+                        extra=extra,
+                    )
+            posts += 1
+    return attempts
+
+
 def reconcile_tick(
     client: ApiClient,
     session_id: str,
@@ -376,8 +542,12 @@ def reconcile_tick(
     fetch_targeted_detail: bool = True,
     detail_retry_5xx: int = 1,
     detail_retry_net: int = 1,
+    execute_actions: bool = True,
+    local_pending: dict[str, set[str]] | None = None,
+    reject_backoff_until: dict[str, float] | None = None,
+    max_action_posts_per_tick: int = 1,
 ) -> ReconcileTickResult:
-    """Single shared tick: optional catalog refresh, bulk incidents GET, at most one targeted detail GET."""
+    """Single shared tick: catalog refresh, bulk incidents GET, optional detail, optional action POSTs."""
     if catalog_cache is not None:
         catalog_cache.maybe_refresh(client, session_id, log=log)
 
@@ -391,6 +561,7 @@ def reconcile_tick(
             rate_limited=True,
             retry_5xx_attempts=2,
             retry_network_attempts=2,
+            retry_429_attempts=3,
         )
     except urllib.error.URLError as e:
         list_err = str(e)
@@ -402,6 +573,7 @@ def reconcile_tick(
             open_incidents=[],
             targeted_detail_id=None,
             detail_http_status=None,
+            action_attempts=[],
         )
 
     if list_status != 200:
@@ -414,6 +586,7 @@ def reconcile_tick(
             open_incidents=[],
             targeted_detail_id=None,
             detail_http_status=None,
+            action_attempts=[],
         )
 
     rows = parse_incidents_list_payload(body)
@@ -439,6 +612,7 @@ def reconcile_tick(
                 rate_limited=True,
                 retry_5xx_attempts=detail_retry_5xx,
                 retry_network_attempts=detail_retry_net,
+                retry_429_attempts=3,
             )
         except urllib.error.URLError as e:
             if log:
@@ -487,10 +661,30 @@ def reconcile_tick(
             extra={"incident_id": "-", "action_id": "-"},
         )
 
+    attempts: list[ActionAttempt] = []
+    if (
+        execute_actions
+        and catalog_cache is not None
+        and catalog_cache.snapshot is not None
+    ):
+        lp = local_pending if local_pending is not None else {}
+        bo = reject_backoff_until if reject_backoff_until is not None else {}
+        attempts = _execute_planned_actions(
+            client=client,
+            session_id=session_id,
+            log=log,
+            states=states,
+            catalog_cache=catalog_cache,
+            local_pending=lp,
+            reject_backoff_until=bo,
+            max_action_posts_per_tick=max(1, int(max_action_posts_per_tick)),
+        )
+
     return ReconcileTickResult(
         list_http_status=list_status,
         list_error=list_err,
         open_incidents=states,
         targeted_detail_id=targeted,
         detail_http_status=detail_st,
+        action_attempts=attempts,
     )

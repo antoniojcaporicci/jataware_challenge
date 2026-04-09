@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import http.client
 import json
 import unittest
 import urllib.error
 from unittest.mock import MagicMock
 
-from nightwatch_worker.catalog import IncidentPlanningState
+from nightwatch_worker.catalog import CatalogCache, IncidentPlanningState
 from nightwatch_worker.http_client import ApiClient
 from nightwatch_worker.incidents import (
     list_row_to_state,
@@ -182,6 +183,7 @@ class TestReconcileTick(unittest.TestCase):
         class CM:
             def __init__(self) -> None:
                 self.status = status
+                self.headers = http.client.HTTPMessage()
 
             def __enter__(self) -> CM:
                 return self
@@ -237,6 +239,54 @@ class TestReconcileTick(unittest.TestCase):
         )
         self.assertIsNone(r2.targeted_detail_id)
         self.assertEqual(opener.open.call_count, 1)
+
+    def test_reconcile_executes_eligible_action(self) -> None:
+        catalog_body = {
+            "actions": [
+                {"action_id": "a1", "parallel": True, "dependencies": []},
+            ],
+            "playbooks": {"t": ("a1",)},
+        }
+        list_body = {
+            "incidents": [
+                {
+                    "incident_id": "i1",
+                    "incident_type": "t",
+                    "status": "open",
+                    "completed_actions": [],
+                    "in_flight_actions": [],
+                    "failed_actions": [],
+                    "accepts_actions": True,
+                }
+            ]
+        }
+        opener = MagicMock()
+        opener.open.side_effect = [
+            self._fake_cm(200, catalog_body),
+            self._fake_cm(200, list_body),
+            self._fake_cm(200, {}),
+        ]
+        client = ApiClient(
+            "https://api.example",
+            "tok",
+            opener=opener,
+            min_incident_interval_sec=0.01,
+        )
+        cache = CatalogCache(retry_5xx_attempts=0, retry_network_attempts=0)
+        pending: dict[str, set[str]] = {}
+        log = MagicMock()
+        r = reconcile_tick(
+            client,
+            "s1",
+            log,
+            catalog_cache=cache,
+            execute_actions=True,
+            local_pending=pending,
+        )
+        self.assertEqual(len(r.action_attempts), 1)
+        self.assertTrue(r.action_attempts[0].ok)
+        self.assertEqual(r.action_attempts[0].action_id, "a1")
+        self.assertIn("a1", pending["i1"])
 
     def test_list_network_error(self) -> None:
         opener = MagicMock()

@@ -32,7 +32,16 @@ class CatalogSnapshot:
     playbooks: Mapping[str, tuple[str, ...]]  # incident_type -> ordered action ids
 
     def playbook(self, incident_type: str) -> tuple[str, ...] | None:
-        return self.playbooks.get(incident_type)
+        t = incident_type.strip()
+        if not t:
+            return None
+        if t in self.playbooks:
+            return self.playbooks[t]
+        if "_" in t:
+            base, suf = t.rsplit("_", 1)
+            if suf.isdigit() and base in self.playbooks:
+                return self.playbooks[base]
+        return None
 
     def action_meta(self, action_id: str) -> ActionMeta | None:
         return self.actions.get(action_id)
@@ -89,7 +98,7 @@ def _parallel_from_obj(obj: dict[str, Any]) -> bool:
         return bool(obj["parallel"])
     if "serial" in obj:
         return not bool(obj["serial"])
-    mode = obj.get("mode") or obj.get("execution_mode")
+    mode = obj.get("mode") or obj.get("execution_mode") or obj.get("execution")
     if isinstance(mode, str):
         n = mode.strip().lower()
         if n in ("parallel", "concurrent"):
@@ -137,6 +146,103 @@ def _merge_playbook_dict(raw: dict[str, Any], into: dict[str, tuple[str, ...]]) 
             into[key] = norm
 
 
+def _extract_actions_dict(actions_obj: dict[str, Any]) -> dict[str, ActionMeta]:
+    """Shape: ``"actions": { "action_id": { "execution": "parallel", ... } }``."""
+    out: dict[str, ActionMeta] = {}
+    for aid_raw, spec in actions_obj.items():
+        aid = _as_str_id(aid_raw)
+        if not aid:
+            continue
+        if not isinstance(spec, dict):
+            spec = {}
+        deps = _dependency_set(spec.get("dependencies")) | _dependency_set(
+            spec.get("depends_on")
+        )
+        out[aid] = ActionMeta(
+            action_id=aid,
+            dependencies=deps,
+            parallel=_parallel_from_obj(spec),
+        )
+    return out
+
+
+def _merge_resolution_dependencies_into_actions(
+    payload: dict[str, Any],
+    actions: dict[str, ActionMeta],
+) -> None:
+    """``depends_on`` on ``resolution_actions`` entries supplements global action metadata."""
+
+    def walk(obj: Any) -> None:
+        if isinstance(obj, dict):
+            for sk in (
+                "resolution_actions",
+                "playbook_steps",
+                "ordered_actions",
+                "steps",
+            ):
+                raw = obj.get(sk)
+                if isinstance(raw, list):
+                    for item in raw:
+                        if not isinstance(item, dict):
+                            continue
+                        aid = _as_str_id(item.get("action_id") or item.get("id"))
+                        if not aid:
+                            continue
+                        step_deps = _dependency_set(item.get("depends_on")) | _dependency_set(
+                            item.get("dependencies")
+                        )
+                        prev = actions.get(aid)
+                        parallel = prev.parallel if prev is not None else _parallel_from_obj(item)
+                        base = prev.dependencies if prev is not None else frozenset()
+                        if step_deps or prev is not None:
+                            actions[aid] = ActionMeta(
+                                action_id=aid,
+                                dependencies=base | step_deps,
+                                parallel=parallel,
+                            )
+            for v in obj.values():
+                walk(v)
+        elif isinstance(obj, list):
+            for x in obj:
+                walk(x)
+
+    walk(payload)
+
+
+def _extract_playbooks_from_type_catalog(
+    catalog_block: dict[str, Any],
+) -> dict[str, tuple[str, ...]]:
+    """``catalog``: slug -> ``{ incident_type, resolution_actions: [...] }``."""
+    out: dict[str, tuple[str, ...]] = {}
+    for outer_key, entry in catalog_block.items():
+        if not isinstance(entry, dict):
+            continue
+        steps: tuple[str, ...] = ()
+        for rk in (
+            "resolution_actions",
+            "playbook_steps",
+            "ordered_actions",
+            "steps",
+        ):
+            raw = entry.get(rk)
+            if isinstance(raw, list):
+                steps = _normalize_playbook_steps(raw)
+                if steps:
+                    break
+        if not steps:
+            continue
+        type_keys: set[str] = set()
+        ik = _as_str_id(entry.get("incident_type"))
+        if ik:
+            type_keys.add(ik)
+        ok = _as_str_id(outer_key)
+        if ok:
+            type_keys.add(ok)
+        for tk in type_keys:
+            out[tk] = steps
+    return out
+
+
 def _extract_playbooks(payload: dict[str, Any]) -> dict[str, tuple[str, ...]]:
     out: dict[str, tuple[str, ...]] = {}
     for key in ("playbooks", "incident_playbooks", "incident_types", "types"):
@@ -150,27 +256,41 @@ def _extract_playbooks(payload: dict[str, Any]) -> dict[str, tuple[str, ...]]:
             _merge_playbook_dict(raw, out)
     nested = payload.get("catalog")
     if isinstance(nested, dict):
+        out.update(_extract_playbooks_from_type_catalog(nested))
         _merge_playbook_dict(_extract_playbooks(nested), out)
     return out
 
 
 def _extract_actions(payload: dict[str, Any]) -> dict[str, ActionMeta]:
     out: dict[str, ActionMeta] = {}
-    for key in ("actions", "global_actions", "action_definitions", "definitions"):
-        raw = payload.get(key)
-        if not isinstance(raw, list):
-            continue
-        for item in raw:
+    raw_actions = payload.get("actions")
+    if isinstance(raw_actions, dict):
+        out.update(_extract_actions_dict(raw_actions))
+    elif isinstance(raw_actions, list):
+        for item in raw_actions:
             if isinstance(item, dict):
                 meta = _parse_action(item)
                 if meta is not None:
                     out[meta.action_id] = meta
-        if raw:
-            break
+    if not isinstance(raw_actions, dict) and not (
+        isinstance(raw_actions, list) and raw_actions
+    ):
+        for key in ("global_actions", "action_definitions", "definitions"):
+            raw = payload.get(key)
+            if not isinstance(raw, list):
+                continue
+            for item in raw:
+                if isinstance(item, dict):
+                    meta = _parse_action(item)
+                    if meta is not None:
+                        out[meta.action_id] = meta
+            if raw:
+                break
     nested = payload.get("catalog")
     if isinstance(nested, dict):
         for aid, meta in _extract_actions(nested).items():
             out.setdefault(aid, meta)
+    _merge_resolution_dependencies_into_actions(payload, out)
     return out
 
 
@@ -187,7 +307,7 @@ def incident_type_mappable(snapshot: CatalogSnapshot | None, incident_type: str)
     """True if cached catalog lists a playbook for this incident type."""
     if snapshot is None:
         return False
-    return incident_type.strip() in snapshot.playbooks
+    return snapshot.playbook(incident_type.strip()) is not None
 
 
 def eligible_next_actions(

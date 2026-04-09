@@ -19,19 +19,37 @@ _INCIDENT_EVENTS = re.compile(r"^/sessions/[^/]+/incidents/[^/]+/events$")
 _INCIDENT_ACTION = re.compile(r"^/sessions/[^/]+/incidents/[^/]+/action$")
 
 
+# One bucket for list, detail, events, and action POST. Many APIs (and this worker's tick
+# shape: list → detail → POST) enforce a single cooldown per session across those routes;
+# separate keys allow back-to-back calls and 429s even when each "family" is spaced.
+INCIDENT_API_RATE_KEY = "session:incident_api"
+
+
 def incident_rate_family(method: str, path: str) -> str | None:
     """Return a stable key for incident API rate limiting, or None if not rate-limited."""
     p = path.split("?", 1)[0]
     m = method.upper()
     if m == "GET" and _INCIDENTS_LIST.match(p):
-        return "GET:/sessions/.../incidents"
+        return INCIDENT_API_RATE_KEY
     if m == "GET" and _INCIDENT_DETAIL.match(p):
-        return "GET:/sessions/.../incidents/{id}"
+        return INCIDENT_API_RATE_KEY
     if m == "GET" and _INCIDENT_EVENTS.match(p):
-        return "GET:/sessions/.../incidents/{id}/events"
+        return INCIDENT_API_RATE_KEY
     if m == "POST" and _INCIDENT_ACTION.match(p):
-        return "POST:/sessions/.../incidents/{id}/action"
+        return INCIDENT_API_RATE_KEY
     return None
+
+
+def _retry_after_seconds(headers: dict[str, str] | None) -> float | None:
+    if not headers:
+        return None
+    raw = headers.get("retry-after")
+    if not raw or not str(raw).strip():
+        return None
+    try:
+        return max(0.0, float(str(raw).strip()))
+    except ValueError:
+        return None
 
 
 def _full_url(base_url: str, path: str) -> str:
@@ -101,12 +119,17 @@ class ApiClient:
         if key is not None:
             self._gate.wait_until_allowed(key)
 
-    def _open(self, req: urllib.request.Request) -> tuple[int, bytes]:
+    def _open(self, req: urllib.request.Request) -> tuple[int, bytes, dict[str, str]]:
         try:
             with self._opener.open(req, timeout=self._timeout) as resp:
-                return resp.status, resp.read()
+                hdrs = {k.lower(): v for k, v in resp.headers.items()}
+                return resp.status, resp.read(), hdrs
         except urllib.error.HTTPError as e:
-            return e.code, e.read()
+            body = e.read()
+            hdrs: dict[str, str] = {}
+            if e.headers:
+                hdrs = {k.lower(): v for k, v in e.headers.items()}
+            return e.code, body, hdrs
 
     def _request_raw(
         self,
@@ -116,7 +139,7 @@ class ApiClient:
         body: bytes | None = None,
         extra_headers: dict[str, str] | None = None,
         accept: str | None = None,
-    ) -> tuple[int, bytes]:
+    ) -> tuple[int, bytes, dict[str, str]]:
         headers = {
             "Authorization": f"Bearer {self._token}",
             **(extra_headers or {}),
@@ -152,13 +175,14 @@ class ApiClient:
         accept: str = "application/json",
         retry_get_5xx_attempts: int = 0,
         retry_get_network_attempts: int = 0,
+        retry_get_429_attempts: int = 0,
         retry_backoff_sec: float = 0.5,
     ) -> tuple[int, Any]:
         """Issue a request; decode JSON response when body is non-empty JSON.
 
-        Retries apply only to **GET** when ``retry_*_attempts`` > 0: 5xx responses and
-        ``URLError`` (transient network). **POST** is never retried here. **4xx** responses
-        are never retried.
+        Retries apply to **GET** when attempts > 0: 5xx, 429 (after ``Retry-After`` or a
+        minimum wait), and ``URLError``. **POST** is not retried (except via a new call).
+        Other **4xx** responses are not retried.
         """
         m = method.upper()
         body_bytes: bytes | None = None
@@ -167,16 +191,21 @@ class ApiClient:
                 raise ValueError("json_body is only valid for POST/PUT/PATCH")
             body_bytes = json.dumps(json_body).encode("utf-8")
 
-        self._apply_rate_gate(m, path, rate_limited=rate_limited)
+        gate_key = incident_rate_family(m, path)
+        first_attempt = True
 
         remain_5xx = retry_get_5xx_attempts
         remain_net = retry_get_network_attempts
+        remain_429 = retry_get_429_attempts
         backoff = retry_backoff_sec
         last_status = 0
         last_data = b""
         while True:
+            if first_attempt:
+                self._apply_rate_gate(m, path, rate_limited=rate_limited)
+                first_attempt = False
             try:
-                status, raw = self._request_raw(
+                status, raw, resp_headers = self._request_raw(
                     m, path, body=body_bytes, accept=accept
                 )
             except urllib.error.URLError:
@@ -188,6 +217,18 @@ class ApiClient:
                 continue
 
             last_status, last_data = status, raw
+            if m == "GET" and status == 429 and remain_429 > 0:
+                remain_429 -= 1
+                wait_ra = _retry_after_seconds(resp_headers)
+                wait = (
+                    wait_ra
+                    if wait_ra is not None
+                    else max(backoff, float(MIN_INCIDENT_ENDPOINT_INTERVAL_SEC))
+                )
+                time.sleep(wait)
+                if rate_limited and gate_key is not None:
+                    self._gate.record_immediate(gate_key)
+                continue
             if m == "GET" and status >= 500 and remain_5xx > 0:
                 remain_5xx -= 1
                 time.sleep(backoff)
@@ -210,6 +251,7 @@ class ApiClient:
         rate_limited: bool = True,
         retry_5xx_attempts: int = 0,
         retry_network_attempts: int = 0,
+        retry_429_attempts: int = 0,
         retry_backoff_sec: float = 0.5,
     ) -> tuple[int, Any]:
         return self.request_json(
@@ -218,6 +260,7 @@ class ApiClient:
             rate_limited=rate_limited,
             retry_get_5xx_attempts=retry_5xx_attempts,
             retry_get_network_attempts=retry_network_attempts,
+            retry_get_429_attempts=retry_429_attempts,
             retry_backoff_sec=retry_backoff_sec,
         )
 
