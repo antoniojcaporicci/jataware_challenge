@@ -21,6 +21,42 @@ from nightwatch_worker.incidents import (
 
 
 class TestParseIncidentsList(unittest.TestCase):
+    def test_accepts_actions_camel_case_key(self) -> None:
+        rows = parse_incidents_list_payload(
+            [
+                {
+                    "incident_id": "i1",
+                    "incident_type": "cache_drift_1",
+                    "status": "open",
+                    "acceptActions": True,
+                    "completed_actions": [],
+                    "in_flight_actions": [],
+                    "failed_actions": [],
+                }
+            ]
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0].accepts_known)
+        self.assertIs(rows[0].accepts_actions, True)
+
+    def test_accepts_actions_numeric_one(self) -> None:
+        rows = parse_incidents_list_payload(
+            [
+                {
+                    "incident_id": "i1",
+                    "incident_type": "cache_drift_1",
+                    "status": "open",
+                    "accepts_actions": 1,
+                    "completed_actions": [],
+                    "in_flight_actions": [],
+                    "failed_actions": [],
+                }
+            ]
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0].accepts_known)
+        self.assertIs(rows[0].accepts_actions, True)
+
     def test_dict_with_incidents_key(self) -> None:
         body = {
             "incidents": [
@@ -123,6 +159,52 @@ class TestNeedsTargetedDetail(unittest.TestCase):
 
 
 class TestMergeAndPlanning(unittest.TestCase):
+    def test_open_list_row_missing_accepts_is_unknown_not_false(self) -> None:
+        rows = parse_incidents_list_payload(
+            [
+                {
+                    "incident_id": "i1",
+                    "type": "t",
+                    "status": "open",
+                    "completed_actions": [],
+                    "in_flight_actions": [],
+                    "failed_actions": [],
+                }
+            ]
+        )
+        st = list_row_to_state(rows[0], detail_truth=True)
+        self.assertIsNone(st.accepts_actions)
+
+    def test_merge_infers_accepts_true_when_detail_omits_field(self) -> None:
+        rows = parse_incidents_list_payload(
+            [
+                {
+                    "incident_id": "i1",
+                    "type": "t",
+                    "status": "open",
+                    "completed_actions": [],
+                    "in_flight_actions": [],
+                    "failed_actions": [],
+                    "accepts_actions": True,
+                }
+            ]
+        )
+        detail = parse_incident_detail_payload(
+            "i1",
+            {
+                "incident_id": "i1",
+                "incident_type": "t",
+                "status": "open",
+                "completed_actions": [],
+                "in_flight_actions": [],
+                "failed_actions": [],
+            },
+        )
+        assert detail is not None
+        merged = merge_detail_over_list(rows[0], detail)
+        self.assertTrue(merged.detail_truth)
+        self.assertIs(merged.accepts_actions, True)
+
     def test_merge_prefers_detail_actions(self) -> None:
         rows = parse_incidents_list_payload(
             [
@@ -147,7 +229,7 @@ class TestMergeAndPlanning(unittest.TestCase):
                 "completed_actions": ["a1"],
                 "in_flight_actions": [],
                 "failed_actions": [],
-                "accepts_actions": True,
+                "accepts_actions": 1,
             },
         )
         assert detail is not None

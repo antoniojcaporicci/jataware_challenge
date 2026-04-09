@@ -107,6 +107,24 @@ def _any_action_keys_present(d: dict[str, Any], key_groups: Iterable[tuple[str, 
     return False
 
 
+def _coerce_accept_flag(raw: Any) -> bool | None:
+    """Normalize API truthy/falsey for accepts-actions fields (bools, strings, 0/1 ints)."""
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if s in ("true", "1", "yes"):
+            return True
+        if s in ("false", "0", "no", ""):
+            return False
+        return None
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    return None
+
+
 @dataclass
 class IncidentListRow:
     """One row from GET /sessions/{{id}}/incidents (bulk list)."""
@@ -134,7 +152,7 @@ class IncidentState:
     completed_action_ids: frozenset[str]
     failed_action_ids: frozenset[str]
     in_flight_action_ids: frozenset[str]
-    accepts_actions: bool
+    accepts_actions: bool | None  # None when open but API omitted or sent an unparseable value
     finished: bool
     expires_at_ts: float | None
     status_token: str
@@ -236,19 +254,17 @@ def _parse_list_item(obj: Any) -> IncidentListRow | None:
 
     accept_keys = (
         "accepts_actions",
+        "acceptActions",
         "can_submit_action",
+        "canSubmitAction",
         "actions_enabled",
+        "actionsEnabled",
         "accepting_actions",
+        "acceptingActions",
     )
     acc_raw = _first_present(d, accept_keys)
-    accepts: bool | None
     accepts_known = any(k in d for k in accept_keys)
-    if isinstance(acc_raw, bool):
-        accepts = acc_raw
-    elif isinstance(acc_raw, str):
-        accepts = acc_raw.strip().lower() in ("true", "1", "yes")
-    else:
-        accepts = None
+    accepts = _coerce_accept_flag(acc_raw)
 
     return IncidentListRow(
         incident_id=incident_id,
@@ -318,7 +334,12 @@ def list_row_to_state(row: IncidentListRow, *, detail_truth: bool) -> IncidentSt
     completed = row.completed_actions if row.completed_actions is not None else frozenset()
     failed = row.failed_actions if row.failed_actions is not None else frozenset()
     inflight = row.in_flight_actions if row.in_flight_actions is not None else frozenset()
-    accepts = row.accepts_actions if row.accepts_actions is not None else False
+    if row.accepts_actions is not None:
+        accepts: bool | None = row.accepts_actions
+    elif not row.is_open:
+        accepts = False
+    else:
+        accepts = None
     finished = not row.is_open
     return IncidentState(
         incident_id=row.incident_id,
@@ -352,13 +373,17 @@ def parse_incident_detail_payload(incident_id: str, body: Any) -> IncidentState 
 def merge_detail_over_list(list_row: IncidentListRow, detail: IncidentState) -> IncidentState:
     """Prefer detail fields; keep list expiry if detail omits it."""
     lr = list_row_to_state(list_row, detail_truth=False)
+    # GET …/incidents/{id} often omits accepts_* for open incidents; treat omission as accepting.
+    accepts = detail.accepts_actions
+    if accepts is None:
+        accepts = False if detail.finished else True
     return IncidentState(
         incident_id=lr.incident_id,
         incident_type=detail.incident_type or lr.incident_type,
         completed_action_ids=detail.completed_action_ids,
         failed_action_ids=detail.failed_action_ids,
         in_flight_action_ids=detail.in_flight_action_ids,
-        accepts_actions=detail.accepts_actions,
+        accepts_actions=accepts,
         finished=detail.finished,
         expires_at_ts=detail.expires_at_ts if detail.expires_at_ts is not None else lr.expires_at_ts,
         status_token=detail.status_token or lr.status_token,
@@ -371,12 +396,14 @@ def to_planning_state(state: IncidentState) -> IncidentPlanningState | None:
     """Convert to catalog planner input; None if action snapshot not trustworthy."""
     if not state.detail_truth:
         return None
+    if state.accepts_actions is not True:
+        return None
     return IncidentPlanningState(
         incident_type=state.incident_type,
         completed_action_ids=state.completed_action_ids,
         failed_action_ids=state.failed_action_ids,
         in_flight_action_ids=state.in_flight_action_ids,
-        accepts_actions=state.accepts_actions,
+        accepts_actions=True,
         finished=state.finished,
     )
 
@@ -427,7 +454,11 @@ def open_incidents_fingerprint(states: Iterable[IncidentState]) -> str:
                 (
                     s.incident_id,
                     _norm_status(s.status_token),
-                    str(int(s.accepts_actions)),
+                    (
+                        str(int(s.accepts_actions))
+                        if s.accepts_actions is not None
+                        else "?"
+                    ),
                     str(len(s.completed_action_ids)),
                     str(len(s.in_flight_action_ids)),
                     str(len(s.failed_action_ids)),
@@ -459,18 +490,73 @@ def _execute_planned_actions(
     for state in states:
         if posts >= max_action_posts_per_tick:
             break
-        if state.finished or not state.accepts_actions:
-            continue
         iid = state.incident_id
+        if state.finished:
+            if log and log.isEnabledFor(logging.DEBUG):
+                log.debug(
+                    "skip action post incident_id=%s reason=finished",
+                    iid,
+                    extra={"incident_id": iid},
+                )
+            continue
+        if state.accepts_actions is not True:
+            if log and log.isEnabledFor(logging.DEBUG):
+                log.debug(
+                    "skip action post incident_id=%s reason=%s",
+                    iid,
+                    (
+                        "accepts_actions_false"
+                        if state.accepts_actions is False
+                        else "accepts_actions_unknown"
+                    ),
+                    extra={"incident_id": iid},
+                )
+            continue
         if iid in reject_backoff_until and now_b < reject_backoff_until[iid]:
+            if log and log.isEnabledFor(logging.DEBUG):
+                log.debug(
+                    "skip action post incident_id=%s reason=reject_backoff remaining_sec=%.2f",
+                    iid,
+                    reject_backoff_until[iid] - now_b,
+                    extra={"incident_id": iid},
+                )
             continue
         if not incident_type_mappable(snap, state.incident_type):
+            if log and log.isEnabledFor(logging.DEBUG):
+                log.debug(
+                    "skip action post incident_id=%s reason=no_playbook_for_type incident_type=%r",
+                    iid,
+                    state.incident_type,
+                    extra={"incident_id": iid},
+                )
             continue
         pend = frozenset(local_pending.get(iid, ()))
         ps = to_planning_state_with_pending(state, pend)
         if ps is None:
+            if log and log.isEnabledFor(logging.DEBUG):
+                log.debug(
+                    "skip action post incident_id=%s reason=planning_state_unavailable "
+                    "detail_truth=%s",
+                    iid,
+                    state.detail_truth,
+                    extra={"incident_id": iid},
+                )
             continue
         eligible = eligible_next_actions(snap, ps)
+        if not eligible:
+            if log and log.isEnabledFor(logging.DEBUG):
+                log.debug(
+                    "skip action post incident_id=%s reason=no_eligible_actions "
+                    "incident_type=%r completed=%s in_flight=%s failed=%s local_pending=%s",
+                    iid,
+                    ps.incident_type,
+                    sorted(ps.completed_action_ids),
+                    sorted(ps.in_flight_action_ids),
+                    sorted(ps.failed_action_ids),
+                    sorted(pend),
+                    extra={"incident_id": iid},
+                )
+            continue
         for action_id in eligible:
             if posts >= max_action_posts_per_tick:
                 break
