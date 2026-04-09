@@ -17,15 +17,15 @@ Polling baseline first; SSE as a stretch goal. Check boxes as you complete items
 
 ## 1. Project skeleton
 
-- [ ] Add a small entrypoint (e.g. `python -m nightwatch_worker` or `worker.py`) that loads `API_URL` / `API_TOKEN` / `SESSION_ID` (reuse `secrets.env` pattern from `challenge_http_cli.py` if helpful).
-- [ ] CLI flags: `--session-id`, optional `--env-file`, `--no-env-file`; optional `--poll-interval` capped so you stay compliant with the 5s rule.
-- [ ] Basic structured logging to stdout (session id, incident id, action id, errors).
+- [x] Add a small entrypoint (e.g. `python -m nightwatch_worker` or `worker.py`) that loads `API_URL` / `API_TOKEN` / `SESSION_ID` (reuse `secrets.env` pattern from `challenge_http_cli.py` if helpful).
+- [x] CLI flags: `--session-id`, optional `--env-file`, `--no-env-file`; optional `--poll-interval` capped so you stay compliant with the 5s rule.
+- [x] Basic structured logging to stdout (session id, incident id, action id, errors).
 
 ## 2. HTTP layer
 
-- [ ] Thin wrapper for `GET`/`POST` with bearer auth and JSON encode/decode.
-- [ ] **Per-endpoint rate gate** (last-call timestamp per path pattern or per logical endpoint family) — polling schedules the *next* allowed time, doesn’t busy-loop.
-- [ ] Retry/backoff only where appropriate (e.g. catalog 5xx / transient network); don’t retry tight loops on 4xx action errors.
+- [x] Thin wrapper for `GET`/`POST` with bearer auth and JSON encode/decode.
+- [x] **Per-endpoint rate gate** (last-call timestamp per path pattern or per logical endpoint family) — polling schedules the *next* allowed time, doesn’t busy-loop.
+- [x] Retry/backoff only where appropriate (e.g. catalog 5xx / transient network); don’t retry tight loops on 4xx action errors.
 
 ## 3. Session lifecycle
 

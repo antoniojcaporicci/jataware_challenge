@@ -2,7 +2,7 @@
 
 ## Prod Alerts Detection
 
-This repo holds a **long-running worker** that detects incidents as they appear in the nightwatch.jata.lol service. It uses the catalog to decide what to do next, and resolves those incidents before they expire.
+This repo holds a **long-running worker** that detects incidents as they appear in the nightwatch.jata.lol service. It relies on a (somewhat flaky) catalog to decide what to do next, and resolves those incidents before they expire.
 
 - **Lifecycle** — creates or reuses a session, starts it when permitted, and runs until the session completes or is stopped.
 - **Incident detection** — keeps an **SSE** connection to the session stream for low-latency notifications, while using **HTTP as the source of truth** for incident and catalog state (including after SSE wake-ups).
@@ -23,6 +23,21 @@ Examples:
 - `docs: clarify SSE vs HTTP truth in README`
 
 Rules of thumb: imperative subject (`add`, `fix`), one logical change per commit, optional scope (`feat(sse): …`).
+
+## Running tests
+
+From the repository root, with **Python 3** (stdlib `unittest` only; no extra packages or API credentials required):
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+To run a single module, for example:
+
+```bash
+python3 -m unittest tests.test_http_client -v
+python3 -m unittest tests.test_worker_cli -v
+```
 
 ## Connecting to the API (secrets, not in git)
 
