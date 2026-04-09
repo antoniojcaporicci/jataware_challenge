@@ -5,7 +5,7 @@
 This repo holds a **long-running worker** that detects incidents as they appear in the nightwatch.jata.lol service. It relies on a (somewhat flaky) catalog to decide what to do next, and resolves those incidents before they expire.
 
 - **Lifecycle** — creates or reuses a session, starts it when permitted, and runs until the session completes or is stopped.
-- **Incident detection** — keeps an **SSE** connection to the session stream for low-latency notifications, while using **HTTP as the source of truth** for incident and catalog state (including after SSE wake-ups).
+- **Incident detection (today)** — **polling**: bulk **`GET …/incidents`** on a rate limit–aware schedule, plus targeted **`GET …/incidents/{id}`** when the list row is not enough to plan. **SSE** to **`GET …/stream`** is the next extension (same reconcile path; see [Next steps: SSE](#next-steps-sse-on-top-of-polling)).
 - **Catalog** — loads the session catalog on demand, retries through short failures, and **re-applies** playbooks when the catalog changes mid-run.
 - **Action execution** — for each open incident, decides what to run next from the playbook and global action definitions: **honors dependencies**, never overlaps **serial** work illegally, caps **parallel** work at what the API allows, and **backs off** when actions are rejected. Polling respects **per-endpoint rate limits** so refreshes stay under the documented ceiling.
 - **Outcome** — when the run ends, fetches the session **summary** (for logs or a final artifact).
@@ -52,6 +52,31 @@ In the main loop, **`reconcile_tick`** refreshes the catalog (unless startup ski
 set -a && source secrets.env && set +a
 python3 -m nightwatch_worker
 ```
+
+### Troubleshooting: no `submitted action` logs
+
+Successful submits log a line like: `submitted action incident_id=… action_id=… http_status=…`. If you never see that, work through this list:
+
+1. **Catalog parsed** — After `catalog refreshed`, counts should be non-zero when the API returns types/actions (e.g. `catalog refreshed (1 types, 2 actions)`). If you see **`(0 types, 0 actions)`** while the session has incidents, the catalog JSON shape may differ from what `nightwatch_worker/catalog.py` expects: capture **`GET /sessions/{id}/catalog`** and extend the parser.
+2. **Playbook matches incident type** — Planning needs a playbook for the incident’s `incident_type`. Unknown or renamed types, or IDs like `cache_drift_2` when the catalog only defines `cache_drift`, are handled via **`CatalogSnapshot.playbook()`** fallbacks; if the server uses another naming pattern, extend that lookup or the parser’s type keys.
+3. **`detail_truth` / planning** — Eligible actions require trustworthy action state (`to_planning_state`). If list rows omit completed/in-flight/accepts fields, the worker fetches **detail** first; ensure detail returns those fields so `detail_truth` becomes true.
+4. **`accepts_actions` / finished** — If the API reports the incident is not accepting actions or is finished, the executor will not POST.
+5. **Backoff after rejections** — A recent **4xx** on `POST …/action` sets per-incident backoff; watch for **`action rejected`** / **`POST action`** warnings.
+6. **Rate limits** — **429** on incident GETs can delay fresh state; the client uses a **shared incident bucket** and **GET 429 retries**. **`--max-action-posts-per-tick`** caps POSTs per tick (default `1`).
+
+For offline verification, run **`python3 -m unittest discover -s tests -v`** (includes catalog and reconcile/action tests).
+
+### Next steps: SSE on top of polling
+
+The worker already exposes **`_WakeCoordinator.notify_check()`** for a second producer. Planned work:
+
+1. **Background thread** — `GET /sessions/{id}/stream` with `Accept: text/event-stream`; parse **`event:`** lines (and `data:` if needed).
+2. **Wake the main loop** — On `incident_*`, `action_*`, `catalog_updated`, `session_finished`, call **`notify_check()`** (same **`reconcile_tick`** path as the timer). **Coalesce** duplicate events in a short window to avoid storms.
+3. **Timing** — After an SSE wake, still treat **HTTP as source of truth**; if list/detail lags the event, **retry with backoff** within the incident rate gate.
+4. **Resilience** — **Reconnect** the stream on disconnect (exponential backoff, capped); do not starve the shared incident HTTP budget.
+5. **CLI** — e.g. **`--no-sse`** for polling-only debugging; optional **`--sse-reconnect-max-sec`** tuning.
+
+See `execution_plan.md` (stretch goal section and **Next steps**) for the checklist aligned with implementation.
 
 ## Connecting to the API (secrets, not in git)
 

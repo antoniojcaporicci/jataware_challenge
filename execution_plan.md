@@ -85,6 +85,31 @@ Polling baseline first; SSE as a stretch goal. Check boxes as you complete items
 
 ---
 
+## Next steps (operations & debugging)
+
+### 1. Debug: no `submitted action` logs
+
+Work in this order:
+
+1. **Confirm catalog snapshot** — Log line `catalog refreshed (N types, M actions)`: if **N=M=0** with a 200 catalog response, capture JSON and fix **`parse_catalog_body`** / `_extract_*` in `catalog.py`.
+2. **Confirm playbook lookup** — **`incident_type_mappable(snapshot, type)`** must be true for the open incident’s type (including **`playbook()`** suffix fallback, e.g. `cache_drift_2` → `cache_drift`).
+3. **Confirm planning input** — **`to_planning_state`** must not return `None` (**`detail_truth`**) for incidents you expect to drive; fix list/detail parsing in `incidents.py` if fields are under different keys.
+4. **API semantics** — Verify **`accepts_actions`**, serial/parallel rules, and that **`POST …/action`** body shape matches the server (`action_id` only unless notes are required).
+5. **Executor path** — Search logs for **`action rejected`**, **429**, **back off**; temporarily lower the log level in `worker_cli.configure_logging` or add debug prints around **`_execute_planned_actions`** if needed.
+
+### 2. Extend: SSE instead of (or alongside) timer-only polling
+
+Implement after the submit path is verified end-to-end on a live session.
+
+1. **Stream client** — Thread (or asyncio) that reads **`GET …/stream`**; parse **`event:`** (and **`data:`** if required).
+2. **Integration** — Map events to **`_WakeCoordinator.notify_check()`** in `worker_cli.py` (or a small `sse_client` module). **Debounce** identical events within ~250–500ms.
+3. **Single reconcile** — No second state machine: SSE only **wakes** the existing **`reconcile_tick`** path.
+4. **Catalog / session** — On **`catalog_updated`**, next tick already refreshes catalog; optionally **force** `force=True` once on wake. On **`session_finished`**, rely on existing **GET session** + summary exit or wake immediately.
+5. **Robustness** — Reconnect with backoff; on wake, if HTTP still shows old state, **schedule retry** without bypassing the incident rate gate.
+6. **Flags** — **`--no-sse`**, **`--sse-url-override`** only if needed for tests.
+
+---
+
 ## Stretch goal: SSE wakeup (after polling MVP is stable)
 
 - [ ] Background task: `GET /sessions/{id}/stream` with `Accept: text/event-stream`; parse **event `event:` lines** (ignore data-only if insufficient).
