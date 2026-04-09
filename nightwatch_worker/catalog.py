@@ -431,7 +431,12 @@ class CatalogCache:
             self._schedule_retry(mono)
             msg = f"network error: {e}"
             if log:
-                log.warning("catalog GET failed (%s); using stale cache=%s", msg, self._snapshot is not None)
+                log.warning(
+                    "catalog GET failed (%s); using stale cache=%s",
+                    msg,
+                    self._snapshot is not None,
+                    extra={"incident_id": "-"},
+                )
             return CatalogRefreshResult(
                 success=False,
                 http_status=0,
@@ -470,6 +475,7 @@ class CatalogCache:
                     "catalog refreshed (%d types, %d actions)",
                     len(self._snapshot.playbooks),
                     len(self._snapshot.actions),
+                    extra={"incident_id": "-"},
                 )
             return CatalogRefreshResult(
                 success=True,
@@ -486,6 +492,7 @@ class CatalogCache:
                 "catalog GET failed (%s); using stale cache=%s",
                 msg,
                 self._snapshot is not None,
+                extra={"incident_id": "-"},
             )
         return CatalogRefreshResult(
             success=False,

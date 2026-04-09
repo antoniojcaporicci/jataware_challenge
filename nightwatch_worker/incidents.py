@@ -488,7 +488,7 @@ def _execute_planned_actions(
                         iid,
                         action_id,
                         e,
-                        extra={"incident_id": iid, "action_id": action_id},
+                        extra={"incident_id": iid},
                     )
                 attempts.append(ActionAttempt(iid, action_id, 0, False))
                 reject_backoff_until[iid] = time.monotonic() + 6.0
@@ -497,7 +497,6 @@ def _execute_planned_actions(
 
             ok = 200 <= st_post < 300
             attempts.append(ActionAttempt(iid, action_id, st_post, ok))
-            extra = {"incident_id": iid, "action_id": action_id}
             if ok:
                 local_pending.setdefault(iid, set()).add(action_id)
                 if log:
@@ -506,8 +505,16 @@ def _execute_planned_actions(
                         iid,
                         action_id,
                         st_post,
-                        extra=extra,
+                        extra={"incident_id": iid},
                     )
+                    if log.isEnabledFor(logging.DEBUG):
+                        log.debug(
+                            "POST action response body incident_id=%s action_id=%s body=%r",
+                            iid,
+                            action_id,
+                            body,
+                            extra={"incident_id": iid},
+                        )
             elif 400 <= st_post < 500:
                 reject_backoff_until[iid] = time.monotonic() + 8.0
                 if log:
@@ -517,7 +524,7 @@ def _execute_planned_actions(
                         action_id,
                         st_post,
                         body,
-                        extra=extra,
+                        extra={"incident_id": iid},
                     )
             else:
                 reject_backoff_until[iid] = time.monotonic() + 5.0
@@ -527,7 +534,7 @@ def _execute_planned_actions(
                         iid,
                         action_id,
                         st_post,
-                        extra=extra,
+                        extra={"incident_id": iid},
                     )
             posts += 1
     return attempts
@@ -566,7 +573,7 @@ def reconcile_tick(
     except urllib.error.URLError as e:
         list_err = str(e)
         if log:
-            log.warning("GET incidents failed: %s", list_err)
+            log.warning("GET incidents failed: %s", list_err, extra={"incident_id": "-"})
         return ReconcileTickResult(
             list_http_status=0,
             list_error=list_err,
@@ -579,7 +586,7 @@ def reconcile_tick(
     if list_status != 200:
         list_err = f"http_status={list_status}"
         if log:
-            log.warning("GET incidents unexpected %s", list_err)
+            log.warning("GET incidents unexpected %s", list_err, extra={"incident_id": "-"})
         return ReconcileTickResult(
             list_http_status=list_status,
             list_error=list_err,
@@ -620,7 +627,7 @@ def reconcile_tick(
                     "GET incident detail failed incident_id=%s: %s",
                     pick.incident_id,
                     e,
-                    extra={"incident_id": pick.incident_id, "action_id": "-"},
+                    extra={"incident_id": pick.incident_id},
                 )
             detail_st = 0
             dbody = None
@@ -630,14 +637,14 @@ def reconcile_tick(
                 log.info(
                     "refreshed incident detail for planning incident_id=%s",
                     pick.incident_id,
-                    extra={"incident_id": pick.incident_id, "action_id": "-"},
+                    extra={"incident_id": pick.incident_id},
                 )
         elif log:
             log.warning(
                 "GET incident detail http_status=%s incident_id=%s",
                 detail_st,
                 pick.incident_id,
-                extra={"incident_id": pick.incident_id, "action_id": "-"},
+                extra={"incident_id": pick.incident_id},
             )
 
     detail_id_for_merge = detail_state.incident_id if detail_state else None
@@ -653,12 +660,13 @@ def reconcile_tick(
             )
 
     if log:
+        tick_iid = targeted or (ordered[0].incident_id if ordered else "-")
         log.info(
             "incidents tick: total=%d open=%d detail_target=%s",
             len(rows),
             len(ordered),
             targeted or "-",
-            extra={"incident_id": "-", "action_id": "-"},
+            extra={"incident_id": tick_iid},
         )
 
     attempts: list[ActionAttempt] = []

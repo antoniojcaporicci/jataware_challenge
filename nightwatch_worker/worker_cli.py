@@ -60,20 +60,19 @@ class _WakeCoordinator:
 
 
 class _StructuredFormatter(logging.Formatter):
-    """Fills optional record fields so the format string always has defined values."""
+    """Fill optional fields so ``session_id`` / ``incident_id`` always render in the format."""
 
     def format(self, record: logging.LogRecord) -> str:
-        for key, default in (
-            ("session_id", "-"),
-            ("incident_id", "-"),
-            ("action_id", "-"),
-        ):
-            if not hasattr(record, key):
-                setattr(record, key, default)
+        if not hasattr(record, "session_id"):
+            setattr(record, "session_id", "-")
+        if not hasattr(record, "incident_id"):
+            setattr(record, "incident_id", "-")
         return super().format(record)
 
 
-def configure_logging(*, session_id: str) -> logging.LoggerAdapter:
+def configure_logging(
+    *, session_id: str, level: int = logging.INFO
+) -> logging.LoggerAdapter:
     root = logging.getLogger()
     if root.handlers:
         root.handlers.clear()
@@ -82,14 +81,21 @@ def configure_logging(*, session_id: str) -> logging.LoggerAdapter:
         _StructuredFormatter(
             fmt=(
                 "%(levelname)s [session=%(session_id)s] "
-                "%(message)s [incident=%(incident_id)s action=%(action_id)s]"
-            )
+                "[incident_id=%(incident_id)s] %(message)s"
+            ),
         )
     )
+    handler.setLevel(level)
     root.addHandler(handler)
-    root.setLevel(logging.INFO)
+    root.setLevel(level)
     base = logging.getLogger("nightwatch_worker")
-    return logging.LoggerAdapter(base, {"session_id": session_id})
+    base.setLevel(level)
+    ctx = {"session_id": session_id, "incident_id": "-"}
+    # Python 3.13+ LoggerAdapter drops per-call ``extra`` unless merge_extra=True.
+    try:
+        return logging.LoggerAdapter(base, ctx, merge_extra=True)
+    except TypeError:
+        return logging.LoggerAdapter(base, ctx)
 
 
 def effective_session_id(args: argparse.Namespace) -> str:
@@ -226,6 +232,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Fetch GET …/summary as JSON instead of markdown.",
     )
+    p.add_argument(
+        "--log-level",
+        choices=["INFO", "DEBUG"],
+        default="INFO",
+        help="Log verbosity: DEBUG includes POST …/action response bodies (default: INFO).",
+    )
     return p
 
 
@@ -247,7 +259,8 @@ def main() -> None:
     token = bearer_token()
     api_base = os.environ.get("API_URL", "").strip().rstrip("/")
 
-    log = configure_logging(session_id=initial_sid)
+    log_level = getattr(logging, str(args.log_level))
+    log = configure_logging(session_id=initial_sid, level=log_level)
     client = ApiClient(api_base, token)
 
     verify_auth_optional(client, log, skip=args.skip_verify)
@@ -273,7 +286,10 @@ def main() -> None:
 
     catalog_cache: CatalogCache | None = None
     if args.skip_initial_catalog:
-        log.info("skipping initial catalog fetch (--skip-initial-catalog)")
+        log.info(
+            "skipping initial catalog fetch (--skip-initial-catalog)",
+            extra={"incident_id": "-"},
+        )
     else:
         catalog_cache = CatalogCache()
         cat_result = catalog_cache.maybe_refresh(client, sid, force=True, log=log)
@@ -281,12 +297,14 @@ def main() -> None:
             pass
         elif cat_result.used_stale and cat_result.snapshot is not None:
             log.warning(
-                "initial catalog fetch failed; continuing with cached snapshot from earlier in process"
+                "initial catalog fetch failed; continuing with cached snapshot from earlier in process",
+                extra={"incident_id": "-"},
             )
         else:
             log.warning(
                 "initial catalog fetch failed (%s); continuing without catalog until next refresh",
                 cat_result.error_message or f"http_status={cat_result.http_status}",
+                extra={"incident_id": "-"},
             )
 
     catalog_loaded = bool(
@@ -297,7 +315,7 @@ def main() -> None:
         poll_interval,
         catalog_loaded,
         not args.skip_incident_polling,
-        extra={"incident_id": "-", "action_id": "-"},
+        extra={"incident_id": "-"},
     )
 
     poll_session_in_loop = not args.assume_session_active
@@ -318,7 +336,7 @@ def main() -> None:
                     log.error(
                         "session reached terminal failure during run (status=%r)",
                         raw_status,
-                        extra={"incident_id": "-", "action_id": "-"},
+                        extra={"incident_id": "-"},
                     )
                     sys.exit(1)
                 if phase == SessionPhase.TERMINAL_OK:
@@ -332,7 +350,7 @@ def main() -> None:
                         "session finished (status=%r); summary http_status=%s",
                         raw_status,
                         st_sum,
-                        extra={"incident_id": "-", "action_id": "-"},
+                        extra={"incident_id": "-"},
                     )
                     if isinstance(body_sum, str) and body_sum.strip():
                         print(body_sum.rstrip())
@@ -370,7 +388,12 @@ def main() -> None:
                         log.error(
                             "dead man: no progress on open incidents for %.0fs — exiting",
                             stall,
-                            extra={"incident_id": "-", "action_id": "-"},
+                            extra={
+                                "incident_id": ",".join(
+                                    s.incident_id for s in tick_result.open_incidents
+                                )
+                                or "-"
+                            },
                         )
                         sys.exit(1)
             else:
@@ -379,4 +402,4 @@ def main() -> None:
 
             wake.wait_until(tick_start + poll_interval)
     except KeyboardInterrupt:
-        log.info("stopped by user", extra={"incident_id": "-", "action_id": "-"})
+        log.info("stopped by user", extra={"incident_id": "-"})
